@@ -18,6 +18,7 @@ class CircuitCanvas extends StatefulWidget {
   final CircuitSolution? solution;
   final CanvasTool activeTool;
   final ValueChanged<Circuit> onCircuitChanged;
+  final ValueChanged<Circuit>? onGeometryChanged;
   final ValueChanged<CircuitBranch> onEditBranch;
 
   const CircuitCanvas({
@@ -26,6 +27,7 @@ class CircuitCanvas extends StatefulWidget {
     required this.solution,
     required this.activeTool,
     required this.onCircuitChanged,
+    this.onGeometryChanged,
     required this.onEditBranch,
   });
 
@@ -195,7 +197,12 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
         y: _snap(pos.dy.clamp(40, 900)),
       );
     }).toList();
-    widget.onCircuitChanged(widget.circuit.copyWith(nodes: updatedNodes));
+    final updated = widget.circuit.copyWith(nodes: updatedNodes);
+    if (widget.onGeometryChanged != null) {
+      widget.onGeometryChanged!(updated);
+    } else {
+      widget.onCircuitChanged(updated);
+    }
   }
 
   void _handlePanEnd(DragEndDetails details) {

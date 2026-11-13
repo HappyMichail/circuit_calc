@@ -27,6 +27,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   late TabController _tabController;
   final TextEditingController _freqCtrl = TextEditingController(text: '50');
+  String? _freqError;
 
   @override
   void initState() {
@@ -89,6 +90,7 @@ class _HomeScreenState extends State<HomeScreen>
       builder: (_) => ElementEditorDialog(
         branch: branch,
         isAc: _circuit.isAc,
+        frequencyHz: _circuit.frequencyHz,
         isTargetBranch: _circuit.effectiveTargetBranchId() == branch.id,
         fromLabel: fromLabel,
         toLabel: toLabel,
@@ -102,8 +104,9 @@ class _HomeScreenState extends State<HomeScreen>
           .toList();
       _circuit = _circuit.copyWith(
         branches: updatedBranches,
-        targetBranchId:
-            res.setAsTarget ? res.branch.id : _circuit.targetBranchId,
+        targetBranchId: res.setAsTarget ? res.branch.id : null,
+        clearTargetBranch:
+            !res.setAsTarget && _circuit.targetBranchId == res.branch.id,
       );
     });
     _solve();
@@ -219,20 +222,26 @@ class _HomeScreenState extends State<HomeScreen>
 
           if (_circuit.isAc)
             SizedBox(
-              width: 105,
+              width: 120,
               child: TextField(
                 controller: _freqCtrl,
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'f (Гц)',
-                  border: OutlineInputBorder(),
+                  errorText: _freqError,
+                  border: const OutlineInputBorder(),
                   isDense: true,
                 ),
-                onSubmitted: (v) {
-                  final f = double.tryParse(v.replaceAll(',', '.')) ?? 50.0;
-                  if (f > 0) {
-                    setState(() => _circuit = _circuit.copyWith(frequencyHz: f));
+                onChanged: (v) {
+                  final f = double.tryParse(v.trim().replaceAll(',', '.'));
+                  if (f == null || !f.isFinite || f <= 0) {
+                    setState(() => _freqError = 'f > 0');
+                  } else {
+                    setState(() {
+                      _freqError = null;
+                      _circuit = _circuit.copyWith(frequencyHz: f);
+                    });
                     _solve();
                   }
                 },
@@ -333,6 +342,7 @@ class _HomeScreenState extends State<HomeScreen>
               circuit: _circuit,
               solution: _solution,
               activeTool: _tool,
+              onGeometryChanged: (c) => setState(() => _circuit = c),
               onCircuitChanged: (c) {
                 setState(() => _circuit = c);
                 _solve();

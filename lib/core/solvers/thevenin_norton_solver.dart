@@ -27,6 +27,7 @@ class TheveninNortonSolver {
     final restCircuit = circuit.copyWith(
       branches: restBranches,
       referenceNodeId: nodeB.id,
+      clearTargetBranch: true,
     );
 
     try {
@@ -60,6 +61,7 @@ class TheveninNortonSolver {
     final zCircuit = restCircuit.copyWith(
       branches: passiveBranches,
       referenceNodeId: nodeB.id,
+      clearTargetBranch: true,
     );
     final mnaZ = SolverUtils.solveMnaRaw(zCircuit);
     final zEq = mnaZ.potentials[nodeA.id]! - mnaZ.potentials[nodeB.id]!;

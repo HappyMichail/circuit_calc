@@ -106,7 +106,7 @@ class Circuit {
     return branches.first.id;
   }
 
-  /// Validates connectivity and basic topological rules.
+  /// Validates connectivity, parameter finiteness, uniqueness, and topology.
   void validate() {
     if (nodes.length < 2) {
       throw const CircuitValidationException(
@@ -116,8 +116,30 @@ class Circuit {
       throw const CircuitValidationException(
           'Схема должна содержать хотя бы одну ветвь.');
     }
-    final nodeIds = nodes.map((n) => n.id).toSet();
+    if (isAc && (!frequencyHz.isFinite || frequencyHz <= 0)) {
+      throw const CircuitValidationException(
+          'Частота переменного тока должна быть положительным конечным числом.');
+    }
+
+    final nodeIds = <String>{};
+    for (final n in nodes) {
+      if (!nodeIds.add(n.id)) {
+        throw CircuitValidationException(
+            'Обнаружен повторяющийся идентификатор узла: ${n.id}.');
+      }
+    }
+
+    if (referenceNodeId != null && !nodeIds.contains(referenceNodeId)) {
+      throw const CircuitValidationException(
+          'Выбранный базовый узел не найден в схеме.');
+    }
+
+    final branchIds = <String>{};
     for (final b in branches) {
+      if (!branchIds.add(b.id)) {
+        throw CircuitValidationException(
+            'Обнаружен повторяющийся идентификатор ветви: ${b.id}.');
+      }
       if (!nodeIds.contains(b.fromNodeId) || !nodeIds.contains(b.toNodeId)) {
         throw CircuitValidationException(
             'Ветвь ${b.name} ссылается на несуществующий узел.');
@@ -126,6 +148,35 @@ class Circuit {
         throw CircuitValidationException(
             'Ветвь ${b.name} замкнута сама на себя (одинаковые узлы).');
       }
+
+      final nums = [
+        b.rOhm,
+        b.lHenry,
+        b.cFarad,
+        if (b.xlOhmOverride != null) b.xlOhmOverride!,
+        if (b.xcOhmOverride != null) b.xcOhmOverride!,
+        b.eMagnitude,
+        b.ePhaseDeg,
+        b.jMagnitude,
+        b.jPhaseDeg,
+      ];
+      if (nums.any((v) => !v.isFinite)) {
+        throw CircuitValidationException(
+            'Ветвь ${b.name} содержит некорректное числовое значение (NaN/Inf).');
+      }
+      if (b.rOhm < 0 ||
+          b.lHenry < 0 ||
+          b.cFarad < 0 ||
+          (b.xlOhmOverride != null && b.xlOhmOverride! < 0) ||
+          (b.xcOhmOverride != null && b.xcOhmOverride! < 0)) {
+        throw CircuitValidationException(
+            'Ветвь ${b.name}: значения R, L, C, XL, XC не могут быть отрицательными.');
+      }
+    }
+
+    if (targetBranchId != null && !branchIds.contains(targetBranchId)) {
+      throw const CircuitValidationException(
+          'Выбранная целевая ветвь не найдена в схеме.');
     }
 
     // Check connectivity via BFS
@@ -156,6 +207,8 @@ class Circuit {
     List<CircuitBranch>? branches,
     String? referenceNodeId,
     String? targetBranchId,
+    bool clearReferenceNode = false,
+    bool clearTargetBranch = false,
   }) {
     return Circuit(
       name: name ?? this.name,
@@ -163,8 +216,10 @@ class Circuit {
       frequencyHz: frequencyHz ?? this.frequencyHz,
       nodes: nodes ?? this.nodes,
       branches: branches ?? this.branches,
-      referenceNodeId: referenceNodeId ?? this.referenceNodeId,
-      targetBranchId: targetBranchId ?? this.targetBranchId,
+      referenceNodeId:
+          clearReferenceNode ? null : (referenceNodeId ?? this.referenceNodeId),
+      targetBranchId:
+          clearTargetBranch ? null : (targetBranchId ?? this.targetBranchId),
     );
   }
 }

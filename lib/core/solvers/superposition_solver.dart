@@ -66,6 +66,7 @@ class SuperpositionSolver {
         referenceNodeId: usedNodeIds.contains(circuit.effectiveReferenceNodeId())
             ? circuit.effectiveReferenceNodeId()
             : subNodes.first.id,
+        clearTargetBranch: true,
       );
 
       final mna = SolverUtils.solveMnaRaw(subCircuit);
