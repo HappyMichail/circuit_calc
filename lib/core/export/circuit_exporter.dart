@@ -139,34 +139,56 @@ class CircuitExporter {
     return (mx + px * offsetIndex * 76.0, my + py * offsetIndex * 76.0);
   }
 
-  static (double x, double y) _bezierAt(
-    double x0,
-    double y0,
-    double cx,
-    double cy,
-    double x2,
-    double y2,
+  static List<(double x, double y)> _branchPolyline(
+    Circuit circuit,
+    CircuitBranch b,
+    double ox,
+    double oy,
+  ) {
+    final from = circuit.nodes.firstWhere((n) => n.id == b.fromNodeId);
+    final to = circuit.nodes.firstWhere((n) => n.id == b.toNodeId);
+    final x0 = from.x - ox;
+    final y0 = from.y - oy;
+    final x2 = to.x - ox;
+    final y2 = to.y - oy;
+    final (mx, my) = _branchControlPoint(circuit, b);
+    final dx = (mx - ox) - (x0 + x2) * 0.5;
+    final dy = (my - oy) - (y0 + y2) * 0.5;
+    if (math.sqrt(dx * dx + dy * dy) < 2.0) {
+      return [(x0, y0), (x2, y2)];
+    }
+    return [(x0, y0), (x0 + dx, y0 + dy), (x2 + dx, y2 + dy), (x2, y2)];
+  }
+
+  static (double x, double y) _polyAt(
+    List<(double x, double y)> pts,
     double t,
   ) {
-    final mt = 1 - t;
-    return (
-      x0 * mt * mt + cx * 2 * mt * t + x2 * t * t,
-      y0 * mt * mt + cy * 2 * mt * t + y2 * t * t,
-    );
+    if (pts.length == 2) {
+      return (
+        pts[0].$1 + (pts[1].$1 - pts[0].$1) * t,
+        pts[0].$2 + (pts[1].$2 - pts[0].$2) * t,
+      );
+    }
+    final (a, b, u) = t <= 0.15
+        ? (pts[0], pts[1], t / 0.15)
+        : (t >= 0.85
+            ? (pts[2], pts[3], (t - 0.85) / 0.15)
+            : (pts[1], pts[2], (t - 0.15) / 0.70));
+    return (a.$1 + (b.$1 - a.$1) * u, a.$2 + (b.$2 - a.$2) * u);
   }
 
   static double _tangentDegAt(
-    double x0,
-    double y0,
-    double cx,
-    double cy,
-    double x2,
-    double y2,
+    List<(double x, double y)> pts,
     double t,
   ) {
-    final dx = (cx - x0) * 2 * (1 - t) + (x2 - cx) * 2 * t;
-    final dy = (cy - y0) * 2 * (1 - t) + (y2 - cy) * 2 * t;
-    return math.atan2(dy, dx) * 180.0 / math.pi;
+    final a = pts.length == 2
+        ? pts[0]
+        : (t <= 0.15 ? pts[0] : (t >= 0.85 ? pts[2] : pts[1]));
+    final b = pts.length == 2
+        ? pts[1]
+        : (t <= 0.15 ? pts[1] : (t >= 0.85 ? pts[3] : pts[2]));
+    return math.atan2(b.$2 - a.$2, b.$1 - a.$1) * 180.0 / math.pi;
   }
 
   /// Generates a complete standalone SVG with schematic and (optionally) results table.
@@ -248,26 +270,20 @@ class CircuitExporter {
 
     // Draw branches
     for (final b in circuit.branches) {
-      final from = circuit.nodes.firstWhere((n) => n.id == b.fromNodeId);
-      final to = circuit.nodes.firstWhere((n) => n.id == b.toNodeId);
-      final (cx, cy) = _branchControlPoint(circuit, b);
-
-      final x0 = from.x - ox;
-      final y0 = from.y - oy;
-      final x1 = cx - ox;
-      final y1 = cy - oy;
-      final x2 = to.x - ox;
-      final y2 = to.y - oy;
+      final pts = _branchPolyline(circuit, b, ox, oy);
+      final ptsAttr = pts
+          .map((p) => '${p.$1.toStringAsFixed(1)},${p.$2.toStringAsFixed(1)}')
+          .join(' ');
       final isTarget = b.id == targetId;
 
       if (isTarget) {
         buf.writeln(
-          '<path d="M $x0 $y0 Q $x1 $y1 $x2 $y2" fill="none" '
+          '<polyline points="$ptsAttr" fill="none" '
           'stroke="#F59E0B" stroke-opacity="0.3" stroke-width="6"/>',
         );
       }
       buf.writeln(
-        '<path d="M $x0 $y0 Q $x1 $y1 $x2 $y2" fill="none" '
+        '<polyline points="$ptsAttr" fill="none" '
         'stroke="#1E40AF" stroke-width="2"/>',
       );
 
@@ -294,8 +310,8 @@ class CircuitExporter {
         final t = syms.length == 1
             ? 0.5
             : 0.28 + (0.44 * si) / (syms.length - 1);
-        final (sx, sy) = _bezierAt(x0, y0, x1, y1, x2, y2, t);
-        final ang = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, t);
+        final (sx, sy) = _polyAt(pts, t);
+        final ang = customDeg ?? _tangentDegAt(pts, t);
         switch (syms[si]) {
           case 'J':
             _svgCurrentSource(buf, sx, sy, ang, b.jAlignedWithBranch);
@@ -315,9 +331,8 @@ class CircuitExporter {
         }
       }
 
-      final (mx, my) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
-      final angRad =
-          _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5) * math.pi / 180.0;
+      final (mx, my) = _polyAt(pts, 0.5);
+      final angRad = _tangentDegAt(pts, 0.5) * math.pi / 180.0;
       final tx = math.cos(angRad);
       final ty = math.sin(angRad);
       branchLabels.add((

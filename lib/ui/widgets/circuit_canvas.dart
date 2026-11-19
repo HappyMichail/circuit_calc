@@ -64,7 +64,8 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
     return null;
   }
 
-  Offset _branchControlPoint(CircuitBranch b, List<CircuitBranch> allBranches) {
+  /// Returns the branch midpoint handle (custom dragged point or automatic parallel offset).
+  Offset _branchMidpoint(CircuitBranch b, List<CircuitBranch> allBranches) {
     if (b.controlX != null && b.controlY != null) {
       return Offset(b.controlX!, b.controlY!);
     }
@@ -90,22 +91,37 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
     final len = canonical.distance;
     if (len < 1e-3) return mid;
     final perp = Offset(-canonical.dy / len, canonical.dx / len);
-    return mid + perp * (offsetIndex * 76.0);
+    return mid + perp * (offsetIndex * 52.0);
+  }
+
+  List<Offset> _branchPolyline(CircuitBranch b) {
+    final from = widget.circuit.nodes.firstWhere((n) => n.id == b.fromNodeId);
+    final to = widget.circuit.nodes.firstWhere((n) => n.id == b.toNodeId);
+    final p0 = Offset(from.x, from.y);
+    final p2 = Offset(to.x, to.y);
+    final mid = _branchMidpoint(b, widget.circuit.branches);
+    final delta = mid - (p0 + p2) * 0.5;
+    if (delta.distance < 2.0) {
+      return [p0, p2];
+    }
+    return [p0, p0 + delta, p2 + delta, p2];
+  }
+
+  double _distToSegment(Offset p, Offset a, Offset b) {
+    final ab = b - a;
+    final len2 = ab.dx * ab.dx + ab.dy * ab.dy;
+    if (len2 < 1e-6) return (p - a).distance;
+    final t = (((p.dx - a.dx) * ab.dx + (p.dy - a.dy) * ab.dy) / len2)
+        .clamp(0.0, 1.0);
+    final proj = Offset(a.dx + t * ab.dx, a.dy + t * ab.dy);
+    return (p - proj).distance;
   }
 
   CircuitBranch? _hitTestBranch(Offset pos) {
     for (final b in widget.circuit.branches) {
-      final from =
-          widget.circuit.nodes.firstWhere((n) => n.id == b.fromNodeId);
-      final to = widget.circuit.nodes.firstWhere((n) => n.id == b.toNodeId);
-      final p0 = Offset(from.x, from.y);
-      final p2 = Offset(to.x, to.y);
-      final ctrl = _branchControlPoint(b, widget.circuit.branches);
-
-      for (var t = 0.1; t <= 0.9; t += 0.05) {
-        final mt = 1 - t;
-        final pt = p0 * (mt * mt) + ctrl * (2 * mt * t) + p2 * (t * t);
-        if ((pt - pos).distance <= 18) {
+      final pts = _branchPolyline(b);
+      for (var i = 0; i < pts.length - 1; i++) {
+        if (_distToSegment(pos, pts[i], pts[i + 1]) <= 16) {
           return b;
         }
       }
@@ -269,13 +285,7 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
       );
       final updatedBranches = widget.circuit.branches.map((b) {
         if (b.id != _draggingBranchId) return b;
-        final from =
-            widget.circuit.nodes.firstWhere((n) => n.id == b.fromNodeId);
-        final to = widget.circuit.nodes.firstWhere((n) => n.id == b.toNodeId);
-        final p0 = Offset(from.x, from.y);
-        final p2 = Offset(to.x, to.y);
-        final ctrl = snappedMid * 2.0 - (p0 + p2) * 0.5;
-        return b.copyWith(controlX: ctrl.dx, controlY: ctrl.dy);
+        return b.copyWith(controlX: snappedMid.dx, controlY: snappedMid.dy);
       }).toList();
       final updated = widget.circuit.copyWith(branches: updatedBranches);
       if (widget.onGeometryChanged != null) {
@@ -327,8 +337,7 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
                 selectedBranchId: widget.selectedBranchId,
                 colorScheme: Theme.of(context).colorScheme,
                 ext: ext,
-                controlPointBuilder: (b) =>
-                    _branchControlPoint(b, widget.circuit.branches),
+                polylineBuilder: _branchPolyline,
               ),
             ),
           ),
@@ -393,7 +402,7 @@ class _SchematicPainter extends CustomPainter {
   final String? selectedBranchId;
   final ColorScheme colorScheme;
   final CircuitColors ext;
-  final Offset Function(CircuitBranch) controlPointBuilder;
+  final List<Offset> Function(CircuitBranch) polylineBuilder;
 
   _SchematicPainter({
     required this.circuit,
@@ -402,17 +411,26 @@ class _SchematicPainter extends CustomPainter {
     required this.selectedBranchId,
     required this.colorScheme,
     required this.ext,
-    required this.controlPointBuilder,
+    required this.polylineBuilder,
   });
 
-  Offset _bezierAt(Offset p0, Offset ctrl, Offset p2, double t) {
-    final mt = 1 - t;
-    return p0 * (mt * mt) + ctrl * (2 * mt * t) + p2 * (t * t);
+  Offset _polyAt(List<Offset> pts, double t) {
+    if (pts.length == 2) {
+      return Offset.lerp(pts[0], pts[1], t)!;
+    }
+    if (t <= 0.15) return Offset.lerp(pts[0], pts[1], t / 0.15)!;
+    if (t >= 0.85) return Offset.lerp(pts[2], pts[3], (t - 0.85) / 0.15)!;
+    return Offset.lerp(pts[1], pts[2], (t - 0.15) / 0.70)!;
   }
 
-  double _tangentAngleAt(Offset p0, Offset ctrl, Offset p2, double t) {
-    final d = (ctrl - p0) * (2 * (1 - t)) + (p2 - ctrl) * (2 * t);
-    return math.atan2(d.dy, d.dx);
+  double _tangentAngleAt(List<Offset> pts, double t) {
+    final a = pts.length == 2
+        ? pts[0]
+        : (t <= 0.15 ? pts[0] : (t >= 0.85 ? pts[2] : pts[1]));
+    final b = pts.length == 2
+        ? pts[1]
+        : (t <= 0.15 ? pts[1] : (t >= 0.85 ? pts[3] : pts[2]));
+    return math.atan2(b.dy - a.dy, b.dx - a.dx);
   }
 
   @override
@@ -443,17 +461,14 @@ class _SchematicPainter extends CustomPainter {
     })>[];
 
     for (final b in circuit.branches) {
-      final fromNode = circuit.nodes.firstWhere((n) => n.id == b.fromNodeId);
-      final toNode = circuit.nodes.firstWhere((n) => n.id == b.toNodeId);
-      final p0 = Offset(fromNode.x, fromNode.y);
-      final p2 = Offset(toNode.x, toNode.y);
-      final ctrl = controlPointBuilder(b);
+      final pts = polylineBuilder(b);
       final isTarget = b.id == targetId;
       final isSelected = b.id == selectedBranchId;
 
-      final path = Path()
-        ..moveTo(p0.dx, p0.dy)
-        ..quadraticBezierTo(ctrl.dx, ctrl.dy, p2.dx, p2.dy);
+      final path = Path()..moveTo(pts.first.dx, pts.first.dy);
+      for (var i = 1; i < pts.length; i++) {
+        path.lineTo(pts[i].dx, pts[i].dy);
+      }
 
       if (isTarget || isSelected) {
         canvas.drawPath(
@@ -461,6 +476,7 @@ class _SchematicPainter extends CustomPainter {
           Paint()
             ..color = ext.accent.withValues(alpha: 0.28)
             ..strokeWidth = 6.5
+            ..strokeJoin = StrokeJoin.miter
             ..style = PaintingStyle.stroke,
         );
       }
@@ -470,6 +486,7 @@ class _SchematicPainter extends CustomPainter {
         Paint()
           ..color = colorScheme.primary
           ..strokeWidth = 2.4
+          ..strokeJoin = StrokeJoin.miter
           ..style = PaintingStyle.stroke,
       );
 
@@ -498,8 +515,8 @@ class _SchematicPainter extends CustomPainter {
         final t = syms.length == 1
             ? 0.5
             : 0.28 + (0.44 * si) / (syms.length - 1);
-        final pt = _bezierAt(p0, ctrl, p2, t);
-        final ang = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, t);
+        final pt = _polyAt(pts, t);
+        final ang = customAngRad ?? _tangentAngleAt(pts, t);
         switch (syms[si]) {
           case 'J':
             _drawCurrentSourceSymbol(canvas, pt, ang, b.jAlignedWithBranch);
@@ -521,16 +538,16 @@ class _SchematicPainter extends CustomPainter {
 
       final res = solution?.branchResults[b.id];
       if (res != null && !res.current.isZero(1e-6)) {
-        final arrowPt = _bezierAt(p0, ctrl, p2, 0.2);
-        var arrowAng = _tangentAngleAt(p0, ctrl, p2, 0.2);
+        final arrowPt = _polyAt(pts, 0.2);
+        var arrowAng = _tangentAngleAt(pts, 0.2);
         if (!circuit.isAc && res.current.re < 0) {
           arrowAng += math.pi;
         }
         _drawFilledArrow(canvas, arrowPt, arrowAng, colorScheme.primary);
       }
 
-      final mid = _bezierAt(p0, ctrl, p2, 0.5);
-      final ang = _tangentAngleAt(p0, ctrl, p2, 0.5);
+      final mid = _polyAt(pts, 0.5);
+      final ang = _tangentAngleAt(pts, 0.5);
       final tangent = Offset(math.cos(ang), math.sin(ang));
       final normal = Offset(-tangent.dy, tangent.dx);
       branchGeom.add((
