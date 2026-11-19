@@ -110,6 +110,22 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
     return null;
   }
 
+  void _handleSecondaryTapDown(TapDownDetails details) {
+    final pos = details.localPosition;
+    final hitBranch = _hitTestBranch(pos);
+    if (hitBranch != null) {
+      widget.onSelectBranch?.call(hitBranch);
+      widget.onEditBranch(hitBranch);
+      return;
+    }
+    final hitNode = _hitTestNode(pos);
+    if (hitNode != null) {
+      widget.onCircuitChanged(
+        widget.circuit.copyWith(referenceNodeId: hitNode.id),
+      );
+    }
+  }
+
   void _handleTapDown(TapDownDetails details) {
     final pos = details.localPosition;
     final hitNode = _hitTestNode(pos);
@@ -288,6 +304,7 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTapDown: _handleTapDown,
+            onSecondaryTapDown: _handleSecondaryTapDown,
             child: CustomPaint(
               size: const Size(820, 560),
               painter: _SchematicPainter(

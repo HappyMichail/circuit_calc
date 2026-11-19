@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:material_ui/material_ui.dart';
+import '../../core/export/circuit_exporter.dart';
 import '../../core/math/complex.dart';
 import '../../core/model/circuit.dart';
 import '../../core/model/circuit_branch.dart';
@@ -138,6 +140,63 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _resetZoom() {
     _canvasTransform.value = Matrix4.identity();
+  }
+
+  Future<void> _exportAs(String extType) async {
+    final defaultPath = CircuitExporter.defaultExportPath(extType);
+    final pathCtrl = TextEditingController(text: defaultPath);
+
+    final chosenPath = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Экспорт схемы и результатов (${extType.toUpperCase()})'),
+        content: SizedBox(
+          width: 440,
+          child: TextField(
+            controller: pathCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Путь сохранения файла',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(pathCtrl.text.trim()),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+    pathCtrl.dispose();
+
+    if (chosenPath == null || chosenPath.isEmpty || !mounted) return;
+
+    try {
+      final file = File(chosenPath);
+      await file.parent.create(recursive: true);
+      if (extType == 'svg') {
+        final svg = CircuitExporter.buildSvg(_circuit, _solution);
+        await file.writeAsString(svg);
+      } else {
+        final bytes = await CircuitExporter.buildPdf(_circuit, _solution);
+        await file.writeAsBytes(bytes);
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Файл сохранён: ${file.path}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка экспорта: $e')),
+      );
+    }
   }
 
   CircuitBranch _inspectedBranch() {
@@ -367,6 +426,8 @@ class _HomeScreenState extends State<HomeScreen>
           ],
           const SizedBox(width: 8),
           _buildTemplatesButton(ext, cs, showLabel: true),
+          const SizedBox(width: 8),
+          _buildExportButton(ext, cs, showLabel: true),
           const Spacer(),
           IconButton(
             tooltip: 'Переключить тему',
@@ -430,6 +491,8 @@ class _HomeScreenState extends State<HomeScreen>
                 ),
                 const SizedBox(width: 6),
                 _buildTemplatesButton(ext, cs, showLabel: false),
+                const SizedBox(width: 4),
+                _buildExportButton(ext, cs, showLabel: false),
                 IconButton(
                   visualDensity: VisualDensity.compact,
                   tooltip: 'Тема',
@@ -484,6 +547,60 @@ class _HomeScreenState extends State<HomeScreen>
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildExportButton(
+    CircuitColors ext,
+    ColorScheme cs, {
+    required bool showLabel,
+  }) {
+    return PopupMenuButton<String>(
+      tooltip: 'Экспорт схемы и результатов',
+      onSelected: _exportAs,
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: 'pdf',
+          child: Row(
+            children: [
+              Icon(Icons.picture_as_pdf_outlined, size: 18),
+              SizedBox(width: 8),
+              Text('Экспорт в PDF (.pdf)'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: 'svg',
+          child: Row(
+            children: [
+              Icon(Icons.image_outlined, size: 18),
+              SizedBox(width: 8),
+              Text('Экспорт в SVG (.svg)'),
+            ],
+          ),
+        ),
+      ],
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: showLabel ? 10 : 8,
+          vertical: 7,
+        ),
+        decoration: BoxDecoration(
+          color: ext.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: ext.outline),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.download, size: 16, color: cs.primary),
+            if (showLabel) ...[
+              const SizedBox(width: 6),
+              const Text('Экспорт', style: TextStyle(fontSize: 13)),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -1007,7 +1124,7 @@ class _HomeScreenState extends State<HomeScreen>
   String _hintForTool(CanvasTool tool) {
     switch (tool) {
       case CanvasTool.selectMove:
-        return 'Клик по ветви — параметры. Клик по узлу — базовый (φ=0). Перетаскивание — сдвиг узлов и элементов.';
+        return 'ПКМ по ветви — параметры, по узлу — базовый (φ=0). Перетаскивание — сдвиг узлов и элементов.';
       case CanvasTool.addNode:
         return 'Нажмите на свободное место холста, чтобы добавить новый узел.';
       case CanvasTool.addBranch:

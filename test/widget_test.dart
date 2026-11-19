@@ -1,9 +1,13 @@
+import 'package:circuit_calc/core/export/circuit_exporter.dart';
 import 'package:circuit_calc/core/model/circuit.dart';
 import 'package:circuit_calc/core/model/circuit_branch.dart';
 import 'package:circuit_calc/core/model/circuit_node.dart';
+import 'package:circuit_calc/core/solvers/circuit_solver.dart';
+import 'package:circuit_calc/core/templates/circuit_templates.dart';
 import 'package:circuit_calc/main.dart';
 import 'package:circuit_calc/ui/widgets/circuit_canvas.dart';
 import 'package:circuit_calc/ui/widgets/element_editor_dialog.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -151,5 +155,64 @@ void main() {
     expect(circuit.branches.first.controlX, isNotNull);
     expect(circuit.branches.first.controlY, isNotNull);
     expect(circuit.branches.first.controlY!, greaterThan(150));
+  });
+
+  testWidgets('Right-clicking a branch triggers onEditBranch',
+      (WidgetTester tester) async {
+    CircuitBranch? edited;
+    const circuit = Circuit(
+      name: 'Right-click test',
+      nodes: [
+        CircuitNode(id: 'n0', label: '0', x: 100, y: 100),
+        CircuitNode(id: 'n1', label: '1', x: 300, y: 100),
+      ],
+      branches: [
+        CircuitBranch(
+          id: 'b1',
+          name: '1',
+          fromNodeId: 'n0',
+          toNodeId: 'n1',
+          rOhm: 10,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CircuitCanvas(
+            circuit: circuit,
+            solution: null,
+            activeTool: CanvasTool.addNode,
+            onCircuitChanged: (_) {},
+            onEditBranch: (b) => edited = b,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tapAt(const Offset(200, 100), buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+
+    expect(edited, isNotNull);
+    expect(edited!.id, 'b1');
+  });
+
+  test('CircuitExporter generates valid SVG and PDF with Cyrillic support',
+      () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final circuit = CircuitTemplates.twoLoopDc();
+    final sol =
+        CircuitSolver.solve(circuit, CalculationMethod.nodalPotentials);
+
+    final svg = CircuitExporter.buildSvg(circuit, sol);
+    expect(svg, contains('<svg'));
+    expect(svg, contains('</svg>'));
+    expect(svg, contains('Ветвь 1'));
+
+    final pdfBytes = await CircuitExporter.buildPdf(circuit, sol);
+    expect(pdfBytes.length, greaterThan(1000));
+    expect(String.fromCharCodes(pdfBytes.take(4)), '%PDF');
   });
 }
