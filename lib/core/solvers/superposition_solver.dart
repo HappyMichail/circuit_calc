@@ -53,19 +53,35 @@ class SuperpositionSolver {
         }
       }
 
-      // Filter nodes still referenced by subBranches
-      final usedNodeIds = <String>{
-        for (final b in subBranches) ...[b.fromNodeId, b.toNodeId],
-      };
-      final subNodes =
-          circuit.nodes.where((n) => usedNodeIds.contains(n.id)).toList();
+      // Keep only the connected component containing activeSrc (disconnected passive islands have 0 current)
+      final adj = <String, List<String>>{};
+      for (final b in subBranches) {
+        adj.putIfAbsent(b.fromNodeId, () => []).add(b.toNodeId);
+        adj.putIfAbsent(b.toNodeId, () => []).add(b.fromNodeId);
+      }
+      final compNodeIds = <String>{activeSrc.fromNodeId};
+      final queue = <String>[activeSrc.fromNodeId];
+      while (queue.isNotEmpty) {
+        final cur = queue.removeAt(0);
+        for (final nxt in adj[cur] ?? const <String>[]) {
+          if (compNodeIds.add(nxt)) queue.add(nxt);
+        }
+      }
+
+      final compNodes =
+          circuit.nodes.where((n) => compNodeIds.contains(n.id)).toList();
+      final compBranches = subBranches
+          .where((b) =>
+              compNodeIds.contains(b.fromNodeId) &&
+              compNodeIds.contains(b.toNodeId))
+          .toList();
 
       final subCircuit = circuit.copyWith(
-        nodes: subNodes,
-        branches: subBranches,
-        referenceNodeId: usedNodeIds.contains(circuit.effectiveReferenceNodeId())
+        nodes: compNodes,
+        branches: compBranches,
+        referenceNodeId: compNodeIds.contains(circuit.effectiveReferenceNodeId())
             ? circuit.effectiveReferenceNodeId()
-            : subNodes.first.id,
+            : compNodes.first.id,
         clearTargetBranch: true,
       );
 

@@ -68,6 +68,41 @@ class CircuitExporter {
       .replaceAll('"', '&quot;')
       .replaceAll("'", '&apos;');
 
+  static const Map<String, String> _cyrToLat = {
+    'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'E',
+    'Ж': 'Zh', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
+    'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
+    'Ф': 'F', 'Х': 'Kh', 'Ц': 'Ts', 'Ч': 'Ch', 'Ш': 'Sh', 'Щ': 'Shch',
+    'Ъ': '', 'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya',
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+    'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+    'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+    'ф': 'f', 'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
+    'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+    'φ': 'U', '∠': '<', '°': ' deg', '★': '*',
+  };
+
+  /// Ensures string is Latin-1 safe for pdf package's internal SVG Helvetica font.
+  static String _toAsciiSafe(String input) {
+    var s = input
+        .replaceAll('Ом', 'Ohm')
+        .replaceAll('Перемычка', 'Wire')
+        .replaceAll('В', 'V')
+        .replaceAll('А', 'A');
+    final out = StringBuffer();
+    for (final rune in s.runes) {
+      final ch = String.fromCharCode(rune);
+      if (_cyrToLat.containsKey(ch)) {
+        out.write(_cyrToLat[ch]);
+      } else if (rune >= 32 && rune <= 126) {
+        out.write(ch);
+      } else {
+        out.write(' ');
+      }
+    }
+    return out.toString();
+  }
+
   static (double x, double y) _branchControlPoint(
     Circuit circuit,
     CircuitBranch b,
@@ -236,33 +271,48 @@ class CircuitExporter {
         'stroke="#1E40AF" stroke-width="2"/>',
       );
 
-      final hasPassive = !b.hasCurrentSource && !circuit.impedanceOf(b).isZero();
       final customDeg = b.symbolAngleDeg;
+      final syms = <String>[];
       if (b.hasCurrentSource) {
-        final (sx, sy) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
-        final ang = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
-        _svgCurrentSource(buf, sx, sy, ang, b.jAlignedWithBranch);
-        placer.reserve(sx, sy, 32, 32);
-      } else if (b.hasEmf && hasPassive) {
-        final (ex, ey) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.36);
-        final angE = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.36);
-        _svgEmf(buf, ex, ey, angE, b.eAlignedWithBranch);
-        placer.reserve(ex, ey, 32, 32);
-
-        final (zx, zy) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.64);
-        final angZ = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.64);
-        _svgImpedance(buf, zx, zy, angZ, isTarget);
-        placer.reserve(zx, zy, 38, 24);
-      } else if (b.hasEmf) {
-        final (ex, ey) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
-        final angE = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
-        _svgEmf(buf, ex, ey, angE, b.eAlignedWithBranch);
-        placer.reserve(ex, ey, 32, 32);
+        syms.add('J');
       } else {
-        final (zx, zy) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
-        final angZ = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
-        _svgImpedance(buf, zx, zy, angZ, isTarget);
-        placer.reserve(zx, zy, 38, 24);
+        if (b.hasEmf) syms.add('E');
+        if (b.rOhm > 0) syms.add('R');
+        if (circuit.isAc) {
+          final xl = b.xlOhmOverride ?? (circuit.omega * b.lHenry);
+          final xc = b.xcOhmOverride ??
+              (b.cFarad > 0 && circuit.omega > 0
+                  ? 1.0 / (circuit.omega * b.cFarad)
+                  : 0.0);
+          if (xl > 1e-9) syms.add('L');
+          if (xc > 1e-9) syms.add('C');
+        }
+        if (syms.isEmpty) syms.add('R');
+      }
+
+      for (var si = 0; si < syms.length; si++) {
+        final t = syms.length == 1
+            ? 0.5
+            : 0.28 + (0.44 * si) / (syms.length - 1);
+        final (sx, sy) = _bezierAt(x0, y0, x1, y1, x2, y2, t);
+        final ang = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, t);
+        switch (syms[si]) {
+          case 'J':
+            _svgCurrentSource(buf, sx, sy, ang, b.jAlignedWithBranch);
+            placer.reserve(sx, sy, 32, 32);
+          case 'E':
+            _svgEmf(buf, sx, sy, ang, b.eAlignedWithBranch);
+            placer.reserve(sx, sy, 32, 32);
+          case 'L':
+            _svgInductor(buf, sx, sy, ang, isTarget);
+            placer.reserve(sx, sy, 38, 24);
+          case 'C':
+            _svgCapacitor(buf, sx, sy, ang, isTarget);
+            placer.reserve(sx, sy, 28, 28);
+          default:
+            _svgImpedance(buf, sx, sy, ang, isTarget);
+            placer.reserve(sx, sy, 38, 24);
+        }
       }
 
       final (mx, my) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
@@ -290,11 +340,12 @@ class CircuitExporter {
       final fill = isRef ? '#B45309' : '#1E40AF';
       final stroke = isRef ? '#F59E0B' : '#3B82F6';
 
+      final nodeLbl = asciiUnits ? _toAsciiSafe(n.label) : n.label;
       buf.writeln(
         '<circle cx="$nx" cy="$ny" r="10" fill="$fill" stroke="$stroke" stroke-width="2"/>',
       );
       buf.writeln(
-        '<text x="$nx" y="${ny + 4}" text-anchor="middle" class="node-t">${_esc(n.label)}</text>',
+        '<text x="$nx" y="${ny + 4}" text-anchor="middle" class="node-t">${_esc(nodeLbl)}</text>',
       );
 
       if (isRef) {
@@ -307,10 +358,10 @@ class CircuitExporter {
 
       final pot = solution?.nodePotentials[n.id];
       if (pot != null) {
-        final phi = asciiUnits ? 'U' : 'φ';
-        final potStr = isRef
-            ? '$phi${n.label}=0 V'
-            : '$phi${n.label}=${pot.toStringRect(digits: 1)} V';
+        final rawPot = isRef
+            ? 'φ${n.label}=0 В'
+            : 'φ${n.label}=${pot.toStringRect(digits: 1)} В';
+        final potStr = asciiUnits ? _toAsciiSafe(rawPot) : rawPot;
         final estW = potStr.length * 6.8 + 8;
         final (lx, ly) = placer.place(
           estW,
@@ -341,9 +392,10 @@ class CircuitExporter {
       final res = solution?.branchResults[bl.b.id];
       if (res != null) {
         final star = bl.isTarget ? ' *' : '';
-        final iStr = circuit.isAc
+        var iStr = circuit.isAc
             ? 'I${bl.b.name}=${res.current.toStringPolar(digits: 2)} A$star'
             : 'I${bl.b.name}=${Complex.fmt(res.current.re, 2)} A$star';
+        if (asciiUnits) iStr = _toAsciiSafe(iStr);
         final estW = iStr.length * 6.8 + 8;
         final (lx, ly) = placer.place(estW, 16, [
           (bl.mx - bl.nx * 26, bl.my - bl.ny * 26),
@@ -361,11 +413,7 @@ class CircuitExporter {
       var summaryText =
           '${bl.b.name}: ${bl.b.summary(isAc: circuit.isAc, omega: circuit.omega)}';
       if (asciiUnits) {
-        summaryText = summaryText
-            .replaceAll('Ом', 'Ohm')
-            .replaceAll('В', 'V')
-            .replaceAll('А', 'A')
-            .replaceAll('Перемычка', 'Wire');
+        summaryText = _toAsciiSafe(summaryText);
       }
       final estW = summaryText.length * 6.4 + 8;
       final (sx, sy) = placer.place(estW, 16, [
@@ -419,6 +467,29 @@ class CircuitExporter {
     buf.writeln(
       '<g transform="translate(${x.toStringAsFixed(1)},${y.toStringAsFixed(1)}) rotate(${angleDeg.toStringAsFixed(1)})">'
       '<rect x="-18" y="-9" width="36" height="18" rx="2" fill="#FFFFFF" stroke="$stroke" stroke-width="2"/>'
+      '</g>',
+    );
+  }
+
+  static void _svgInductor(
+      StringBuffer buf, double x, double y, double angleDeg, bool isTarget) {
+    final stroke = isTarget ? '#F59E0B' : '#1E40AF';
+    buf.writeln(
+      '<g transform="translate(${x.toStringAsFixed(1)},${y.toStringAsFixed(1)}) rotate(${angleDeg.toStringAsFixed(1)})">'
+      '<rect x="-18" y="-10" width="36" height="20" fill="#FFFFFF"/>'
+      '<path d="M -18 0 A 6 6 0 0 1 -6 0 A 6 6 0 0 1 6 0 A 6 6 0 0 1 18 0" fill="none" stroke="$stroke" stroke-width="2"/>'
+      '</g>',
+    );
+  }
+
+  static void _svgCapacitor(
+      StringBuffer buf, double x, double y, double angleDeg, bool isTarget) {
+    final stroke = isTarget ? '#F59E0B' : '#1E40AF';
+    buf.writeln(
+      '<g transform="translate(${x.toStringAsFixed(1)},${y.toStringAsFixed(1)}) rotate(${angleDeg.toStringAsFixed(1)})">'
+      '<rect x="-5" y="-12" width="10" height="24" fill="#FFFFFF"/>'
+      '<line x1="-4" y1="-11" x2="-4" y2="11" stroke="$stroke" stroke-width="2.2"/>'
+      '<line x1="4" y1="-11" x2="4" y2="11" stroke="$stroke" stroke-width="2.2"/>'
       '</g>',
     );
   }

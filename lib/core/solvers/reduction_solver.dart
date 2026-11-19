@@ -375,6 +375,9 @@ class ReductionSolver {
   static (_RedEdge, _RedEdge, _RedEdge, String, String, String)?
       _findPassiveDelta(List<_RedEdge> edges) {
     final passive = edges.where((e) => e.isPassive).toList();
+    bool connects(_RedEdge e, String x, String y) =>
+        (e.u == x && e.v == y) || (e.u == y && e.v == x);
+
     for (var i = 0; i < passive.length; i++) {
       for (var j = i + 1; j < passive.length; j++) {
         for (var k = j + 1; k < passive.length; k++) {
@@ -384,7 +387,25 @@ class ReductionSolver {
           final nodes = <String>{e1.u, e1.v, e2.u, e2.v, e3.u, e3.v};
           if (nodes.length == 3) {
             final list = nodes.toList();
-            return (e1, e2, e3, list[0], list[1], list[2]);
+            final a = list[0];
+            final b = list[1];
+            final c = list[2];
+            final triple = [e1, e2, e3];
+            _RedEdge? eAb;
+            _RedEdge? eBc;
+            _RedEdge? eCa;
+            for (final e in triple) {
+              if (eAb == null && connects(e, a, b)) {
+                eAb = e;
+              } else if (eBc == null && connects(e, b, c)) {
+                eBc = e;
+              } else if (eCa == null && connects(e, c, a)) {
+                eCa = e;
+              }
+            }
+            if (eAb != null && eBc != null && eCa != null) {
+              return (eAb, eBc, eCa, a, b, c);
+            }
           }
         }
       }

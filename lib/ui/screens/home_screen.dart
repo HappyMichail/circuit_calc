@@ -1,17 +1,14 @@
-import 'dart:io';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
-import '../../core/export/circuit_exporter.dart';
 import '../../core/math/complex.dart';
 import '../../core/model/circuit.dart';
 import '../../core/model/circuit_branch.dart';
-import '../../core/model/circuit_node.dart';
-import '../../core/model/solution.dart';
-import '../../core/solvers/circuit_solver.dart';
-import '../../core/storage/project_storage.dart';
 import '../../core/templates/circuit_templates.dart';
+import '../controllers/circuit_editor_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/circuit_canvas.dart';
 import '../widgets/element_editor_dialog.dart';
+import '../widgets/project_dialogs.dart';
 import '../widgets/solution_panel.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -30,17 +27,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
-  late Circuit _circuit;
-  CalculationMethod _method = CalculationMethod.nodalPotentials;
-  CalculationMethod _acBaseMethod = CalculationMethod.nodalPotentials;
-  CanvasTool _tool = CanvasTool.selectMove;
-
-  CircuitSolution? _solution;
-  Duration? _solveDuration;
-  String? _error;
-  String? _selectedBranchId;
-
-  late TabController _tabController;
+  late final CircuitEditorController _ctrl;
+  late final TabController _tabController;
   final TextEditingController _freqCtrl = TextEditingController(text: '50');
   final TransformationController _canvasTransform = TransformationController();
   String? _freqError;
@@ -48,95 +36,76 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
-    _circuit = CircuitTemplates.twoLoopDc();
-    _selectedBranchId = _circuit.effectiveTargetBranchId();
+    _ctrl = CircuitEditorController();
+    _ctrl.addListener(_onControllerChanged);
     _tabController = TabController(length: 2, vsync: this);
-    _solve();
+  }
+
+  void _onControllerChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    _ctrl.removeListener(_onControllerChanged);
+    _ctrl.dispose();
     _tabController.dispose();
     _freqCtrl.dispose();
     _canvasTransform.dispose();
     super.dispose();
   }
 
-  void _solve({bool switchToResultOnMobile = false}) {
-    final sw = Stopwatch()..start();
-    setState(() {
-      _error = null;
-      try {
-        _solution = CircuitSolver.solve(
-          _circuit,
-          _method,
-          acBaseMethod: _acBaseMethod,
-        );
-        sw.stop();
-        _solveDuration = sw.elapsed;
-      } catch (e) {
-        sw.stop();
-        _solution = null;
-        _solveDuration = null;
-        _error = e.toString();
-      }
-      if (switchToResultOnMobile && MediaQuery.of(context).size.width < 960) {
-        _tabController.animateTo(1);
-      }
-    });
+  void _syncFreqText() {
+    _freqCtrl.text = _ctrl.circuit.frequencyHz.toString();
+    _freqError = null;
   }
 
-  void _loadTemplate(Circuit template) {
-    setState(() {
-      _circuit = template;
-      _selectedBranchId = template.effectiveTargetBranchId();
-      _freqCtrl.text = template.frequencyHz.toString();
-      _freqError = null;
-      if (template.isAc) {
-        _method = CalculationMethod.complexMethod;
-      } else if (_method == CalculationMethod.complexMethod) {
-        _method = CalculationMethod.nodalPotentials;
-      }
-    });
-    _solve();
+  Future<void> _loadTemplate(Circuit template) async {
+    if (!await ProjectDialogs.confirmDiscardIfDirty(context, _ctrl)) return;
+    _ctrl.loadTemplate(template);
+    _syncFreqText();
+  }
+
+  Future<void> _handleProjectAction(String action) async {
+    switch (action) {
+      case 'new':
+        if (!await ProjectDialogs.confirmDiscardIfDirty(context, _ctrl)) return;
+        _ctrl.newProject();
+        _syncFreqText();
+      case 'save':
+        await ProjectDialogs.showSaveProjectDialog(context, _ctrl);
+      case 'open':
+        if (!await ProjectDialogs.confirmDiscardIfDirty(context, _ctrl)) return;
+        if (!mounted) return;
+        final loaded =
+            await ProjectDialogs.showOpenProjectDialog(context, _ctrl);
+        if (loaded) _syncFreqText();
+    }
   }
 
   Future<void> _editBranch(CircuitBranch branch) async {
-    final fromLabel =
-        _circuit.nodes.firstWhere((n) => n.id == branch.fromNodeId).label;
-    final toLabel =
-        _circuit.nodes.firstWhere((n) => n.id == branch.toNodeId).label;
+    final c = _ctrl.circuit;
+    final fromLabel = c.nodes.firstWhere((n) => n.id == branch.fromNodeId).label;
+    final toLabel = c.nodes.firstWhere((n) => n.id == branch.toNodeId).label;
 
     final res = await showDialog<ElementEditorResult>(
       context: context,
       builder: (_) => ElementEditorDialog(
         branch: branch,
-        isAc: _circuit.isAc,
-        frequencyHz: _circuit.frequencyHz,
-        isTargetBranch: _circuit.effectiveTargetBranchId() == branch.id,
+        isAc: c.isAc,
+        frequencyHz: c.frequencyHz,
+        isTargetBranch: c.effectiveTargetBranchId() == branch.id,
         fromLabel: fromLabel,
         toLabel: toLabel,
       ),
     );
     if (res == null) return;
-
-    setState(() {
-      final updatedBranches = _circuit.branches
-          .map((b) => b.id == res.branch.id ? res.branch : b)
-          .toList();
-      _selectedBranchId = res.branch.id;
-      _circuit = _circuit.copyWith(
-        branches: updatedBranches,
-        targetBranchId: res.setAsTarget ? res.branch.id : null,
-        clearTargetBranch:
-            !res.setAsTarget && _circuit.targetBranchId == res.branch.id,
-      );
-    });
-    _solve();
+    _ctrl.updateEditedBranch(res.branch, setAsTarget: res.setAsTarget);
   }
 
   void _zoomBy(double factor) {
-    final m = _canvasTransform.value.clone()..scaleByDouble(factor, factor, factor, 1.0);
+    final m = _canvasTransform.value.clone()
+      ..scaleByDouble(factor, factor, factor, 1.0);
     _canvasTransform.value = m;
   }
 
@@ -144,381 +113,14 @@ class _HomeScreenState extends State<HomeScreen>
     _canvasTransform.value = Matrix4.identity();
   }
 
-  void _rotateSelectedBranch() {
-    final target = _inspectedBranch();
-    final nextAngle = ((target.symbolAngleDeg ?? 0.0) + 45.0) % 360.0;
-    final updatedBranches = _circuit.branches
-        .map((b) =>
-            b.id == target.id ? b.copyWith(symbolAngleDeg: nextAngle) : b)
-        .toList();
-    setState(() {
-      _circuit = _circuit.copyWith(branches: updatedBranches);
-    });
-  }
-
-  Future<void> _handleProjectAction(String action) async {
-    switch (action) {
-      case 'new':
-        setState(() {
-          _circuit = const Circuit(
-            name: 'Новый проект',
-            isAc: false,
-            nodes: [
-              CircuitNode(id: 'n0', label: '0', x: 180, y: 260),
-              CircuitNode(id: 'n1', label: '1', x: 380, y: 140),
-            ],
-            branches: [
-              CircuitBranch(
-                id: 'b1',
-                name: '1',
-                fromNodeId: 'n0',
-                toNodeId: 'n1',
-                rOhm: 2,
-                eMagnitude: 12,
-                eAlignedWithBranch: true,
-              ),
-              CircuitBranch(
-                id: 'b2',
-                name: '2',
-                fromNodeId: 'n1',
-                toNodeId: 'n0',
-                rOhm: 10,
-              ),
-            ],
-            referenceNodeId: 'n0',
-            targetBranchId: 'b2',
-          );
-          _selectedBranchId = 'b2';
-          _method = CalculationMethod.nodalPotentials;
-          _freqCtrl.text = '50';
-          _freqError = null;
-        });
-        _solve();
-      case 'save':
-        await _saveProjectDialog();
-      case 'open':
-        await _openProjectDialog();
+  void _onFreqChanged(String v) {
+    final f = double.tryParse(v.trim().replaceAll(',', '.'));
+    if (f == null || !f.isFinite || f <= 0) {
+      setState(() => _freqError = 'f > 0');
+    } else {
+      setState(() => _freqError = null);
+      _ctrl.setFrequency(f);
     }
-  }
-
-  Future<void> _saveProjectDialog() async {
-    final nameCtrl = TextEditingController(text: _circuit.name);
-    final pathCtrl = TextEditingController(
-      text: ProjectStorage.defaultProjectFilePath(_circuit.name),
-    );
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Сохранить проект'),
-        content: SizedBox(
-          width: 460,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'Название проекта',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-                onChanged: (val) {
-                  pathCtrl.text = ProjectStorage.defaultProjectFilePath(val);
-                },
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: pathCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'Путь к файлу (.ccalc.json)',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Сохранить'),
-          ),
-        ],
-      ),
-    );
-
-    final newName = nameCtrl.text.trim();
-    final rawPath = pathCtrl.text.trim();
-    nameCtrl.dispose();
-    pathCtrl.dispose();
-
-    if (confirmed != true || rawPath.isEmpty || !mounted) return;
-
-    try {
-      var targetPath = rawPath;
-      final sep = Platform.pathSeparator;
-      if (!targetPath.contains('\\') && !targetPath.contains('/')) {
-        final dir = ProjectStorage.defaultProjectsDirectory().path;
-        targetPath = '$dir$sep$targetPath';
-      }
-      if (Directory(targetPath).existsSync() ||
-          targetPath.endsWith('\\') ||
-          targetPath.endsWith('/')) {
-        final cleanDir = targetPath.endsWith('\\') || targetPath.endsWith('/')
-            ? targetPath.substring(0, targetPath.length - 1)
-            : targetPath;
-        final fileName = ProjectStorage.defaultProjectFilePath(newName)
-            .split(sep)
-            .last;
-        targetPath = '$cleanDir$sep$fileName';
-      } else if (!targetPath.toLowerCase().endsWith('.json')) {
-        targetPath = '$targetPath.ccalc.json';
-      }
-
-      final updatedCircuit = newName.isEmpty
-          ? _circuit
-          : _circuit.copyWith(name: newName);
-
-      final project = SavedProject(
-        circuit: updatedCircuit,
-        method: _method,
-        acBaseMethod: _acBaseMethod,
-      );
-
-      final file = File(targetPath);
-      await file.parent.create(recursive: true);
-      await file.writeAsString(ProjectStorage.encode(project));
-
-      if (!mounted) return;
-      setState(() => _circuit = updatedCircuit);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Проект сохранён: ${file.path}')),
-      );
-    } on PathAccessException catch (_) {
-      if (!mounted) return;
-      final fallbackPath = ProjectStorage.defaultProjectFilePath(
-        newName.isEmpty ? _circuit.name : newName,
-      );
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(seconds: 6),
-          content: const Text(
-            'Нет прав на запись в выбранную папку (например, корень диска).',
-          ),
-          action: SnackBarAction(
-            label: 'В Документы',
-            onPressed: () async {
-              final f = File(fallbackPath);
-              await f.parent.create(recursive: true);
-              await f.writeAsString(ProjectStorage.encode(SavedProject(
-                circuit: newName.isEmpty
-                    ? _circuit
-                    : _circuit.copyWith(name: newName),
-                method: _method,
-                acBaseMethod: _acBaseMethod,
-              )));
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Проект сохранён: ${f.path}')),
-              );
-            },
-          ),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка сохранения проекта: $e')),
-      );
-    }
-  }
-
-  Future<void> _openProjectDialog() async {
-    final savedFiles = ProjectStorage.listSavedProjects();
-    final pathCtrl = TextEditingController();
-
-    final selectedPath = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Открыть проект'),
-        content: SizedBox(
-          width: 460,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (savedFiles.isNotEmpty) ...[
-                Text(
-                  'Сохранённые проекты:',
-                  style: Theme.of(ctx).textTheme.labelLarge,
-                ),
-                const SizedBox(height: 6),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 200),
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: savedFiles.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (_, idx) {
-                      final f = savedFiles[idx];
-                      final fileName =
-                          f.path.split(Platform.pathSeparator).last;
-                      return ListTile(
-                        dense: true,
-                        leading: const Icon(Icons.description_outlined, size: 18),
-                        title: Text(fileName),
-                        subtitle: Text(
-                          f.path,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                        onTap: () => Navigator.of(ctx).pop(f.path),
-                      );
-                    },
-                  ),
-                ),
-                const Divider(height: 20),
-              ],
-              TextField(
-                controller: pathCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'Или введите путь к файлу (.json)',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final p = pathCtrl.text.trim();
-              if (p.isNotEmpty) Navigator.of(ctx).pop(p);
-            },
-            child: const Text('Открыть'),
-          ),
-        ],
-      ),
-    );
-    pathCtrl.dispose();
-
-    if (selectedPath == null || selectedPath.isEmpty || !mounted) return;
-
-    try {
-      final raw = await File(selectedPath).readAsString();
-      final project = ProjectStorage.decode(raw);
-      project.circuit.validate();
-
-      if (!mounted) return;
-      setState(() {
-        _circuit = project.circuit;
-        _method = project.method;
-        _acBaseMethod = project.acBaseMethod;
-        _selectedBranchId = project.circuit.effectiveTargetBranchId();
-        _freqCtrl.text = project.circuit.frequencyHz.toString();
-        _freqError = null;
-      });
-      _solve();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Проект загружен: ${project.circuit.name}')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка загрузки проекта: $e')),
-      );
-    }
-  }
-
-  Future<void> _exportAs(String extType) async {
-    final defaultPath = CircuitExporter.defaultExportPath(extType);
-    final pathCtrl = TextEditingController(text: defaultPath);
-
-    final chosenPath = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Экспорт схемы и результатов (${extType.toUpperCase()})'),
-        content: SizedBox(
-          width: 440,
-          child: TextField(
-            controller: pathCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Путь сохранения файла',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(pathCtrl.text.trim()),
-            child: const Text('Сохранить'),
-          ),
-        ],
-      ),
-    );
-    pathCtrl.dispose();
-
-    if (chosenPath == null || chosenPath.isEmpty || !mounted) return;
-
-    try {
-      var targetPath = chosenPath;
-      if (Directory(targetPath).existsSync() ||
-          targetPath.endsWith('\\') ||
-          targetPath.endsWith('/')) {
-        final sep = Platform.pathSeparator;
-        final cleanDir = targetPath.endsWith('\\') || targetPath.endsWith('/')
-            ? targetPath.substring(0, targetPath.length - 1)
-            : targetPath;
-        final fileName =
-            CircuitExporter.defaultExportPath(extType).split(sep).last;
-        targetPath = '$cleanDir$sep$fileName';
-      } else if (!targetPath.toLowerCase().endsWith('.$extType')) {
-        targetPath = '$targetPath.$extType';
-      }
-
-      final file = File(targetPath);
-      await file.parent.create(recursive: true);
-      if (extType == 'svg') {
-        final svg = CircuitExporter.buildSvg(_circuit, _solution);
-        await file.writeAsString(svg);
-      } else {
-        final bytes = await CircuitExporter.buildPdf(_circuit, _solution);
-        await file.writeAsBytes(bytes);
-      }
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Файл сохранён: ${file.path}')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка экспорта: $e')),
-      );
-    }
-  }
-
-  CircuitBranch _inspectedBranch() {
-    final id = _selectedBranchId ?? _circuit.effectiveTargetBranchId();
-    return _circuit.branches.firstWhere(
-      (b) => b.id == id,
-      orElse: () => _circuit.branches.first,
-    );
   }
 
   @override
@@ -528,95 +130,120 @@ class _HomeScreenState extends State<HomeScreen>
         Theme.of(context).extension<CircuitColors>() ?? CircuitColors.dark;
     final cs = Theme.of(context).colorScheme;
 
-    return Scaffold(
-      body: SafeArea(
-        child: Column(
-          children: [
-            isWide
-                ? _buildDesktopHeader(context, ext, cs)
-                : _buildMobileHeader(context, ext, cs),
-            Expanded(
-              child: isWide
-                  ? Row(
-                      children: [
-                        Expanded(
-                          flex: 6,
-                          child: _buildDesktopWorkspace(context, ext, cs),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyZ, control: true):
+            _ctrl.undo,
+        const SingleActivator(LogicalKeyboardKey.keyY, control: true):
+            _ctrl.redo,
+        const SingleActivator(LogicalKeyboardKey.keyZ,
+            control: true, shift: true): _ctrl.redo,
+        const SingleActivator(LogicalKeyboardKey.keyS, control: true): () =>
+            ProjectDialogs.showSaveProjectDialog(context, _ctrl),
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            _ctrl.setTool(CanvasTool.selectMove),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          body: SafeArea(
+            child: Column(
+              children: [
+                isWide
+                    ? _buildDesktopHeader(context, ext, cs)
+                    : _buildMobileHeader(context, ext, cs),
+                Expanded(
+                  child: isWide
+                      ? Row(
+                          children: [
+                            Expanded(
+                              flex: 6,
+                              child: _buildDesktopWorkspace(context, ext, cs),
+                            ),
+                            VerticalDivider(width: 1, color: ext.outline),
+                            SizedBox(
+                              width: 470,
+                              child: SolutionPanel(
+                                circuit: _ctrl.circuit,
+                                solution: _ctrl.solution,
+                                errorMessage: _ctrl.error,
+                                solveDuration: _ctrl.solveDuration,
+                              ),
+                            ),
+                          ],
+                        )
+                      : TabBarView(
+                          controller: _tabController,
+                          children: [
+                            _buildMobileSchemaTab(context, ext, cs),
+                            SolutionPanel(
+                              circuit: _ctrl.circuit,
+                              solution: _ctrl.solution,
+                              errorMessage: _ctrl.error,
+                              solveDuration: _ctrl.solveDuration,
+                            ),
+                          ],
                         ),
-                        VerticalDivider(width: 1, color: ext.outline),
-                        SizedBox(
-                          width: 470,
-                          child: SolutionPanel(
-                            circuit: _circuit,
-                            solution: _solution,
-                            errorMessage: _error,
-                            solveDuration: _solveDuration,
-                          ),
-                        ),
-                      ],
-                    )
-                  : TabBarView(
-                      controller: _tabController,
-                      children: [
-                        _buildMobileSchemaTab(context, ext, cs),
-                        SolutionPanel(
-                          circuit: _circuit,
-                          solution: _solution,
-                          errorMessage: _error,
-                          solveDuration: _solveDuration,
-                        ),
-                      ],
-                    ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildBrand(BuildContext context, CircuitColors ext, ColorScheme cs) {
+  Widget _buildBrand(BuildContext context, CircuitColors ext, ColorScheme cs,
+      {bool compact = false}) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          width: 30,
-          height: 30,
+          width: compact ? 26 : 30,
+          height: compact ? 26 : 30,
           decoration: BoxDecoration(
             color: cs.primary.withValues(alpha: 0.14),
             borderRadius: BorderRadius.circular(6),
             border: Border.all(color: cs.primary.withValues(alpha: 0.35)),
           ),
-          child: Icon(Icons.electric_bolt, size: 18, color: cs.primary),
-        ),
-        const SizedBox(width: 8),
-        const Text(
-          'CircuitCalc',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          child: Icon(Icons.electric_bolt,
+              size: compact ? 16 : 18, color: cs.primary),
         ),
         const SizedBox(width: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          decoration: BoxDecoration(
-            color: ext.surfaceContainerHigh,
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: ext.outline),
-          ),
-          child: Text(
-            'ТОЭ',
-            style: TextStyle(
-              fontSize: 10,
-              fontFamily: 'monospace',
-              color: cs.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
-            ),
+        Text(
+          _ctrl.isDirty ? 'CircuitCalc •' : 'CircuitCalc',
+          style: TextStyle(
+            fontSize: compact ? 14 : 16,
+            fontWeight: FontWeight.w700,
           ),
         ),
+        if (!compact) ...[
+          const SizedBox(width: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: ext.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: ext.outline),
+            ),
+            child: Text(
+              'ТОЭ',
+              style: TextStyle(
+                fontSize: 10,
+                fontFamily: 'monospace',
+                color: cs.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }
 
   Widget _buildDesktopHeader(
       BuildContext context, CircuitColors ext, ColorScheme cs) {
+    final c = _ctrl.circuit;
     return Container(
       height: 56,
       padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -634,7 +261,6 @@ class _HomeScreenState extends State<HomeScreen>
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // DC / AC toggle
                   SegmentedButton<bool>(
                     showSelectedIcon: false,
                     style: const ButtonStyle(
@@ -645,21 +271,10 @@ class _HomeScreenState extends State<HomeScreen>
                       ButtonSegment(value: false, label: Text('DC')),
                       ButtonSegment(value: true, label: Text('AC')),
                     ],
-                    selected: {_circuit.isAc},
-                    onSelectionChanged: (s) {
-                      final isAc = s.first;
-                      setState(() {
-                        _circuit = _circuit.copyWith(isAc: isAc);
-                        if (isAc) {
-                          _method = CalculationMethod.complexMethod;
-                        } else if (_method == CalculationMethod.complexMethod) {
-                          _method = CalculationMethod.nodalPotentials;
-                        }
-                      });
-                      _solve();
-                    },
+                    selected: {c.isAc},
+                    onSelectionChanged: (s) => _ctrl.setIsAc(s.first),
                   ),
-                  if (_circuit.isAc) ...[
+                  if (c.isAc) ...[
                     const SizedBox(width: 8),
                     SizedBox(
                       width: 90,
@@ -680,7 +295,6 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   ],
                   const SizedBox(width: 8),
-                  // Method dropdown
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     decoration: BoxDecoration(
@@ -694,7 +308,7 @@ class _HomeScreenState extends State<HomeScreen>
                         child: DropdownButton<CalculationMethod>(
                           isDense: true,
                           isExpanded: true,
-                          value: _method,
+                          value: _ctrl.method,
                           items: [
                             for (final m in CalculationMethod.values)
                               DropdownMenuItem(
@@ -706,12 +320,14 @@ class _HomeScreenState extends State<HomeScreen>
                                 ),
                               ),
                           ],
-                          onChanged: _onMethodChanged,
+                          onChanged: (m) {
+                            if (m != null) _ctrl.setMethod(m);
+                          },
                         ),
                       ),
                     ),
                   ),
-                  if (_method == CalculationMethod.complexMethod) ...[
+                  if (_ctrl.method == CalculationMethod.complexMethod) ...[
                     const SizedBox(width: 8),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -723,7 +339,7 @@ class _HomeScreenState extends State<HomeScreen>
                       child: DropdownButtonHideUnderline(
                         child: DropdownButton<CalculationMethod>(
                           isDense: true,
-                          value: _acBaseMethod,
+                          value: _ctrl.acBaseMethod,
                           items: [
                             for (final m in CalculationMethod.values.where(
                                 (x) => x != CalculationMethod.complexMethod))
@@ -736,9 +352,7 @@ class _HomeScreenState extends State<HomeScreen>
                               ),
                           ],
                           onChanged: (m) {
-                            if (m == null) return;
-                            setState(() => _acBaseMethod = m);
-                            _solve();
+                            if (m != null) _ctrl.setAcBaseMethod(m);
                           },
                         ),
                       ),
@@ -754,7 +368,17 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'Отменить (Ctrl+Z)',
+            onPressed: _ctrl.canUndo ? _ctrl.undo : null,
+            icon: const Icon(Icons.undo, size: 19),
+          ),
+          IconButton(
+            tooltip: 'Повторить (Ctrl+Y)',
+            onPressed: _ctrl.canRedo ? _ctrl.redo : null,
+            icon: const Icon(Icons.redo, size: 19),
+          ),
           IconButton(
             tooltip: 'Переключить тему',
             onPressed: widget.onToggleTheme,
@@ -762,12 +386,12 @@ class _HomeScreenState extends State<HomeScreen>
               widget.themeMode == ThemeMode.dark
                   ? Icons.light_mode_outlined
                   : Icons.dark_mode_outlined,
-              size: 20,
+              size: 19,
             ),
           ),
           const SizedBox(width: 4),
           FilledButton.icon(
-            onPressed: () => _solve(),
+            onPressed: _ctrl.solve,
             icon: const Icon(Icons.play_arrow, size: 18),
             label: const Text('Рассчитать'),
           ),
@@ -786,50 +410,52 @@ class _HomeScreenState extends State<HomeScreen>
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             child: Row(
               children: [
-                _buildBrand(context, ext, cs),
-                const Spacer(),
-                SegmentedButton<bool>(
-                  showSelectedIcon: false,
-                  style: const ButtonStyle(
-                    visualDensity: VisualDensity.compact,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                  segments: const [
-                    ButtonSegment(value: false, label: Text('DC')),
-                    ButtonSegment(value: true, label: Text('AC')),
-                  ],
-                  selected: {_circuit.isAc},
-                  onSelectionChanged: (s) {
-                    final isAc = s.first;
-                    setState(() {
-                      _circuit = _circuit.copyWith(isAc: isAc);
-                      if (isAc) {
-                        _method = CalculationMethod.complexMethod;
-                      } else if (_method == CalculationMethod.complexMethod) {
-                        _method = CalculationMethod.nodalPotentials;
-                      }
-                    });
-                    _solve();
-                  },
-                ),
+                _buildBrand(context, ext, cs, compact: true),
                 const SizedBox(width: 6),
-                _buildProjectButton(ext, cs, showLabel: false),
-                const SizedBox(width: 4),
-                _buildTemplatesButton(ext, cs, showLabel: false),
-                const SizedBox(width: 4),
-                _buildExportButton(ext, cs, showLabel: false),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Тема',
-                  onPressed: widget.onToggleTheme,
-                  icon: Icon(
-                    widget.themeMode == ThemeMode.dark
-                        ? Icons.light_mode_outlined
-                        : Icons.dark_mode_outlined,
-                    size: 18,
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SegmentedButton<bool>(
+                            showSelectedIcon: false,
+                            style: const ButtonStyle(
+                              visualDensity: VisualDensity.compact,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            segments: const [
+                              ButtonSegment(value: false, label: Text('DC')),
+                              ButtonSegment(value: true, label: Text('AC')),
+                            ],
+                            selected: {_ctrl.circuit.isAc},
+                            onSelectionChanged: (s) => _ctrl.setIsAc(s.first),
+                          ),
+                          const SizedBox(width: 4),
+                          _buildProjectButton(ext, cs, showLabel: false),
+                          const SizedBox(width: 4),
+                          _buildTemplatesButton(ext, cs, showLabel: false),
+                          const SizedBox(width: 4),
+                          _buildExportButton(ext, cs, showLabel: false),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: 'Тема',
+                            onPressed: widget.onToggleTheme,
+                            icon: Icon(
+                              widget.themeMode == ThemeMode.dark
+                                  ? Icons.light_mode_outlined
+                                  : Icons.dark_mode_outlined,
+                              size: 18,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -840,7 +466,7 @@ class _HomeScreenState extends State<HomeScreen>
             dividerColor: Colors.transparent,
             tabs: [
               const Tab(
-                height: 40,
+                height: 38,
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -851,14 +477,14 @@ class _HomeScreenState extends State<HomeScreen>
                 ),
               ),
               Tab(
-                height: 40,
+                height: 38,
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     const Icon(Icons.functions, size: 16),
                     const SizedBox(width: 6),
                     const Text('Решение'),
-                    if (_solution != null) ...[
+                    if (_ctrl.solution != null) ...[
                       const SizedBox(width: 6),
                       Container(
                         width: 7,
@@ -919,27 +545,8 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         ),
       ],
-      child: Container(
-        padding: EdgeInsets.symmetric(
-          horizontal: showLabel ? 10 : 8,
-          vertical: 7,
-        ),
-        decoration: BoxDecoration(
-          color: ext.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: ext.outline),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.folder_outlined, size: 16, color: cs.primary),
-            if (showLabel) ...[
-              const SizedBox(width: 6),
-              const Text('Проект', style: TextStyle(fontSize: 13)),
-            ],
-          ],
-        ),
-      ),
+      child: _headerPill(ext, Icons.folder_outlined, cs.primary,
+          showLabel ? 'Проект' : null),
     );
   }
 
@@ -950,7 +557,8 @@ class _HomeScreenState extends State<HomeScreen>
   }) {
     return PopupMenuButton<String>(
       tooltip: 'Экспорт схемы и результатов',
-      onSelected: _exportAs,
+      onSelected: (extType) =>
+          ProjectDialogs.showExportDialog(context, _ctrl, extType),
       itemBuilder: (_) => const [
         PopupMenuItem(
           value: 'pdf',
@@ -973,27 +581,8 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         ),
       ],
-      child: Container(
-        padding: EdgeInsets.symmetric(
-          horizontal: showLabel ? 10 : 8,
-          vertical: 7,
-        ),
-        decoration: BoxDecoration(
-          color: ext.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: ext.outline),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.download, size: 16, color: cs.primary),
-            if (showLabel) ...[
-              const SizedBox(width: 6),
-              const Text('Экспорт', style: TextStyle(fontSize: 13)),
-            ],
-          ],
-        ),
-      ),
+      child: _headerPill(
+          ext, Icons.download, cs.primary, showLabel ? 'Экспорт' : null),
     );
   }
 
@@ -1022,40 +611,45 @@ class _HomeScreenState extends State<HomeScreen>
             ),
           ),
       ],
-      child: Container(
-        padding: EdgeInsets.symmetric(
-          horizontal: showLabel ? 10 : 8,
-          vertical: 7,
-        ),
-        decoration: BoxDecoration(
-          color: ext.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: ext.outline),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.auto_stories, size: 16, color: ext.accent),
-            if (showLabel) ...[
-              const SizedBox(width: 6),
-              const Text('Шаблоны', style: TextStyle(fontSize: 13)),
-              const SizedBox(width: 2),
-              Icon(Icons.expand_more, size: 16, color: cs.onSurfaceVariant),
-            ],
+      child: _headerPill(
+          ext, Icons.auto_stories, ext.accent, showLabel ? 'Шаблоны' : null),
+    );
+  }
+
+  Widget _headerPill(
+      CircuitColors ext, IconData icon, Color iconColor, String? label) {
+    return Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: label != null ? 10 : 7,
+        vertical: 6,
+      ),
+      decoration: BoxDecoration(
+        color: ext.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: ext.outline),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: iconColor),
+          if (label != null) ...[
+            const SizedBox(width: 6),
+            Text(label, style: const TextStyle(fontSize: 13)),
           ],
-        ),
+        ],
       ),
     );
   }
 
   Widget _buildDesktopWorkspace(
       BuildContext context, CircuitColors ext, ColorScheme cs) {
-    final refNode = _circuit.nodes
-        .firstWhere((n) => n.id == _circuit.effectiveReferenceNodeId());
-    final targetBranch = _circuit.branches
-        .firstWhere((b) => b.id == _circuit.effectiveTargetBranchId());
-    final inspected = _inspectedBranch();
-    final res = _solution?.branchResults[inspected.id];
+    final c = _ctrl.circuit;
+    final refNode =
+        c.nodes.firstWhere((n) => n.id == c.effectiveReferenceNodeId());
+    final targetBranch =
+        c.branches.firstWhere((b) => b.id == c.effectiveTargetBranchId());
+    final inspected = _ctrl.inspectedBranch;
+    final res = _ctrl.solution?.branchResults[inspected.id];
 
     return Column(
       children: [
@@ -1064,28 +658,23 @@ class _HomeScreenState extends State<HomeScreen>
             children: [
               Positioned.fill(
                 child: CircuitCanvas(
-                  circuit: _circuit,
-                  solution: _solution,
-                  activeTool: _tool,
-                  selectedBranchId: _selectedBranchId,
+                  circuit: c,
+                  solution: _ctrl.solution,
+                  activeTool: _ctrl.tool,
+                  selectedBranchId: _ctrl.selectedBranchId,
                   transformationController: _canvasTransform,
-                  onSelectBranch: (b) =>
-                      setState(() => _selectedBranchId = b.id),
-                  onGeometryChanged: (c) => setState(() => _circuit = c),
-                  onCircuitChanged: (c) {
-                    setState(() => _circuit = c);
-                    _solve();
-                  },
+                  onSelectBranch: (b) => _ctrl.selectBranch(b.id),
+                  onGeometryDragStart: _ctrl.beginGeometryDrag,
+                  onGeometryChanged: _ctrl.updateGeometry,
+                  onCircuitChanged: _ctrl.applyCircuitChange,
                   onEditBranch: _editBranch,
                 ),
               ),
-              // Floating Top-Left Toolstrip
               Positioned(
                 top: 12,
                 left: 12,
                 child: _buildFloatingToolstrip(ext, cs, vertical: false),
               ),
-              // Floating Top-Right Legend Badges
               Positioned(
                 top: 12,
                 right: 12,
@@ -1105,7 +694,6 @@ class _HomeScreenState extends State<HomeScreen>
                   ],
                 ),
               ),
-              // Floating Bottom Hints
               Positioned(
                 bottom: 10,
                 left: 12,
@@ -1118,7 +706,7 @@ class _HomeScreenState extends State<HomeScreen>
                     border: Border.all(color: ext.outline),
                   ),
                   child: Text(
-                    _hintForTool(_tool),
+                    _hintForTool(_ctrl.tool),
                     style: TextStyle(
                       fontSize: 11,
                       fontFamily: 'monospace',
@@ -1130,7 +718,6 @@ class _HomeScreenState extends State<HomeScreen>
             ],
           ),
         ),
-        // Quick Branch Inspector Drawer
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
@@ -1161,8 +748,7 @@ class _HomeScreenState extends State<HomeScreen>
                   child: Row(
                     children: [
                       Text(
-                        inspected.summary(
-                            isAc: _circuit.isAc, omega: _circuit.omega),
+                        inspected.summary(isAc: c.isAc, omega: c.omega),
                         style: TextStyle(
                           fontSize: 12,
                           fontFamily: 'monospace',
@@ -1172,7 +758,7 @@ class _HomeScreenState extends State<HomeScreen>
                       if (res != null) ...[
                         const SizedBox(width: 12),
                         Text(
-                          'I = ${_circuit.isAc ? res.current.toStringPolar(digits: 2) : Complex.fmt(res.current.re, 3)} А',
+                          'I = ${c.isAc ? res.current.toStringPolar(digits: 2) : Complex.fmt(res.current.re, 3)} А',
                           style: TextStyle(
                             fontSize: 12,
                             fontFamily: 'monospace',
@@ -1199,7 +785,7 @@ class _HomeScreenState extends State<HomeScreen>
               IconButton(
                 visualDensity: VisualDensity.compact,
                 tooltip: 'Повернуть элемент на 45°',
-                onPressed: _rotateSelectedBranch,
+                onPressed: _ctrl.rotateSelectedBranch,
                 icon: const Icon(Icons.rotate_right, size: 18),
               ),
               const SizedBox(width: 4),
@@ -1216,12 +802,12 @@ class _HomeScreenState extends State<HomeScreen>
 
   Widget _buildMobileSchemaTab(
       BuildContext context, CircuitColors ext, ColorScheme cs) {
-    final inspected = _inspectedBranch();
-    final res = _solution?.branchResults[inspected.id];
+    final c = _ctrl.circuit;
+    final inspected = _ctrl.inspectedBranch;
+    final res = _ctrl.solution?.branchResults[inspected.id];
 
     return Column(
       children: [
-        // Method selector pill
         Padding(
           padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
           child: Container(
@@ -1231,39 +817,97 @@ class _HomeScreenState extends State<HomeScreen>
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: ext.outline),
             ),
-            child: Row(
+            child: Column(
               children: [
-                Text(
-                  'Метод:',
-                  style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                Row(
+                  children: [
+                    Text(
+                      'Метод:',
+                      style:
+                          TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<CalculationMethod>(
+                          isDense: true,
+                          isExpanded: true,
+                          value: _ctrl.method,
+                          items: [
+                            for (final m in CalculationMethod.values)
+                              DropdownMenuItem(
+                                value: m,
+                                child: Text(
+                                  m.title,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                              ),
+                          ],
+                          onChanged: (m) {
+                            if (m != null) _ctrl.setMethod(m);
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<CalculationMethod>(
-                      isDense: true,
-                      isExpanded: true,
-                      value: _method,
-                      items: [
-                        for (final m in CalculationMethod.values)
-                          DropdownMenuItem(
-                            value: m,
-                            child: Text(
-                              m.title,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 12),
+                if (c.isAc) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      SizedBox(
+                        width: 96,
+                        child: TextField(
+                          controller: _freqCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true),
+                          decoration: InputDecoration(
+                            labelText: 'f (Гц)',
+                            errorText: _freqError,
+                            border: const OutlineInputBorder(),
+                            isDense: true,
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 6),
+                          ),
+                          onChanged: _onFreqChanged,
+                        ),
+                      ),
+                      if (_ctrl.method == CalculationMethod.complexMethod) ...[
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<CalculationMethod>(
+                              isDense: true,
+                              isExpanded: true,
+                              value: _ctrl.acBaseMethod,
+                              items: [
+                                for (final m in CalculationMethod.values.where(
+                                    (x) =>
+                                        x != CalculationMethod.complexMethod))
+                                  DropdownMenuItem(
+                                    value: m,
+                                    child: Text(
+                                      'База: ${m.shortTitle}',
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                              ],
+                              onChanged: (m) {
+                                if (m != null) _ctrl.setAcBaseMethod(m);
+                              },
                             ),
                           ),
+                        ),
                       ],
-                      onChanged: _onMethodChanged,
-                    ),
+                    ],
                   ),
-                ),
+                ],
               ],
             ),
           ),
         ),
-        // Canvas
         Expanded(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -1277,18 +921,15 @@ class _HomeScreenState extends State<HomeScreen>
                 children: [
                   Positioned.fill(
                     child: CircuitCanvas(
-                      circuit: _circuit,
-                      solution: _solution,
-                      activeTool: _tool,
-                      selectedBranchId: _selectedBranchId,
+                      circuit: c,
+                      solution: _ctrl.solution,
+                      activeTool: _ctrl.tool,
+                      selectedBranchId: _ctrl.selectedBranchId,
                       transformationController: _canvasTransform,
-                      onSelectBranch: (b) =>
-                          setState(() => _selectedBranchId = b.id),
-                      onGeometryChanged: (c) => setState(() => _circuit = c),
-                      onCircuitChanged: (c) {
-                        setState(() => _circuit = c);
-                        _solve();
-                      },
+                      onSelectBranch: (b) => _ctrl.selectBranch(b.id),
+                      onGeometryDragStart: _ctrl.beginGeometryDrag,
+                      onGeometryChanged: _ctrl.updateGeometry,
+                      onCircuitChanged: _ctrl.applyCircuitChange,
                       onEditBranch: _editBranch,
                     ),
                   ),
@@ -1302,8 +943,7 @@ class _HomeScreenState extends State<HomeScreen>
             ),
           ),
         ),
-        // Mini Power Balance bar
-        if (_solution != null)
+        if (_ctrl.solution != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
             child: Container(
@@ -1312,35 +952,42 @@ class _HomeScreenState extends State<HomeScreen>
                 color: ext.surfaceContainer,
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color: (_solution!.isPowerBalanced ? ext.success : cs.error)
+                  color: (_ctrl.solution!.isPowerBalanced
+                          ? ext.success
+                          : cs.error)
                       .withValues(alpha: 0.45),
                 ),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.check_circle,
-                        size: 15,
-                        color: _solution!.isPowerBalanced
-                            ? ext.success
-                            : cs.error,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        'Баланс: ${Complex.fmt(_solution!.totalSourcePowerP, 2)} Вт',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontFamily: 'monospace',
-                          fontWeight: FontWeight.w600,
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.check_circle,
+                          size: 15,
+                          color: _ctrl.solution!.isPowerBalanced
+                              ? ext.success
+                              : cs.error,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            'Баланс: ${Complex.fmt(_ctrl.solution!.totalSourcePowerP, 2)} Вт',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontFamily: 'monospace',
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   Text(
-                    'P_потр: ${Complex.fmt(_solution!.totalLoadPowerP, 2)} Вт',
+                    'P_потр: ${Complex.fmt(_ctrl.solution!.totalLoadPowerP, 2)} Вт',
                     style: TextStyle(
                       fontSize: 11,
                       fontFamily: 'monospace',
@@ -1351,7 +998,6 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
           ),
-        // Bottom Action Sheet
         Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
@@ -1370,7 +1016,7 @@ class _HomeScreenState extends State<HomeScreen>
                   ),
                   if (res != null)
                     Text(
-                      'I = ${_circuit.isAc ? res.current.toStringPolar(digits: 2) : Complex.fmt(res.current.re, 3)} А',
+                      'I = ${c.isAc ? res.current.toStringPolar(digits: 2) : Complex.fmt(res.current.re, 3)} А',
                       style: TextStyle(
                         fontFamily: 'monospace',
                         fontWeight: FontWeight.w700,
@@ -1385,7 +1031,7 @@ class _HomeScreenState extends State<HomeScreen>
                   IconButton(
                     visualDensity: VisualDensity.compact,
                     tooltip: 'Повернуть на 45°',
-                    onPressed: _rotateSelectedBranch,
+                    onPressed: _ctrl.rotateSelectedBranch,
                     icon: const Icon(Icons.rotate_right, size: 20),
                   ),
                   const SizedBox(width: 4),
@@ -1398,7 +1044,10 @@ class _HomeScreenState extends State<HomeScreen>
                   const SizedBox(width: 8),
                   Expanded(
                     child: FilledButton(
-                      onPressed: () => _solve(switchToResultOnMobile: true),
+                      onPressed: () {
+                        _ctrl.solve();
+                        _tabController.animateTo(1);
+                      },
                       child: const Text('Рассчитать →'),
                     ),
                   ),
@@ -1418,16 +1067,30 @@ class _HomeScreenState extends State<HomeScreen>
   }) {
     final items = [
       _toolBtn(CanvasTool.selectMove, Icons.near_me, 'Выбор / Перемещение', cs),
-      _toolBtn(CanvasTool.addNode, Icons.add_circle_outline, 'Добавить узел', cs),
+      _toolBtn(
+          CanvasTool.addNode, Icons.add_circle_outline, 'Добавить узел', cs),
       _toolBtn(CanvasTool.addBranch, Icons.timeline, 'Добавить ветвь', cs),
       _toolBtn(CanvasTool.delete, Icons.delete_outline, 'Удалить', cs),
       IconButton(
         visualDensity: VisualDensity.compact,
         tooltip: 'Повернуть элемент на 45°',
-        onPressed: _rotateSelectedBranch,
+        onPressed: _ctrl.rotateSelectedBranch,
         icon: const Icon(Icons.rotate_right, size: 18),
       ),
-      if (!vertical) ...[
+      if (vertical) ...[
+        IconButton(
+          visualDensity: VisualDensity.compact,
+          tooltip: 'Отменить',
+          onPressed: _ctrl.canUndo ? _ctrl.undo : null,
+          icon: const Icon(Icons.undo, size: 17),
+        ),
+        IconButton(
+          visualDensity: VisualDensity.compact,
+          tooltip: 'Повторить',
+          onPressed: _ctrl.canRedo ? _ctrl.redo : null,
+          icon: const Icon(Icons.redo, size: 17),
+        ),
+      ] else ...[
         Container(width: 1, height: 22, color: ext.outline),
         IconButton(
           visualDensity: VisualDensity.compact,
@@ -1465,7 +1128,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   Widget _toolBtn(
       CanvasTool tool, IconData icon, String tooltip, ColorScheme cs) {
-    final selected = _tool == tool;
+    final selected = _ctrl.tool == tool;
     return IconButton(
       visualDensity: VisualDensity.compact,
       tooltip: tooltip,
@@ -1474,7 +1137,7 @@ class _HomeScreenState extends State<HomeScreen>
         foregroundColor: selected ? cs.onPrimary : cs.onSurface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
       ),
-      onPressed: () => setState(() => _tool = tool),
+      onPressed: () => _ctrl.setTool(tool),
       icon: Icon(icon, size: 18),
     );
   }
@@ -1509,34 +1172,10 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  void _onFreqChanged(String v) {
-    final f = double.tryParse(v.trim().replaceAll(',', '.'));
-    if (f == null || !f.isFinite || f <= 0) {
-      setState(() => _freqError = 'f > 0');
-    } else {
-      setState(() {
-        _freqError = null;
-        _circuit = _circuit.copyWith(frequencyHz: f);
-      });
-      _solve();
-    }
-  }
-
-  void _onMethodChanged(CalculationMethod? m) {
-    if (m == null) return;
-    setState(() {
-      _method = m;
-      if (m == CalculationMethod.complexMethod && !_circuit.isAc) {
-        _circuit = _circuit.copyWith(isAc: true);
-      }
-    });
-    _solve();
-  }
-
   String _hintForTool(CanvasTool tool) {
     switch (tool) {
       case CanvasTool.selectMove:
-        return 'ЛКМ — выбор/перетаскивание. ПКМ по ветви — параметры, по узлу — базовый (φ=0).';
+        return 'ЛКМ — выбор/перетаскивание. ПКМ по ветви — параметры, по узлу — базовый (φ=0). Ctrl+Z/Y — отмена/повтор.';
       case CanvasTool.addNode:
         return 'Нажмите на свободное место холста, чтобы добавить новый узел.';
       case CanvasTool.addBranch:

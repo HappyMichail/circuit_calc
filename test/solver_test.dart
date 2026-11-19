@@ -6,6 +6,7 @@ import 'package:circuit_calc/core/model/solution.dart';
 import 'package:circuit_calc/core/solvers/circuit_solver.dart';
 import 'package:circuit_calc/core/storage/project_storage.dart';
 import 'package:circuit_calc/core/templates/circuit_templates.dart';
+import 'package:circuit_calc/ui/controllers/circuit_editor_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void _verifyKirchhoffAndOhm(Circuit circuit, CircuitSolution sol) {
@@ -374,6 +375,150 @@ void main() {
       expect(restored.circuit.branches.first.symbolAngleDeg, 90.0);
       expect(restored.circuit.branches[1].lHenry, 0.05);
       expect(restored.circuit.branches[2].cFarad, 0.0002);
+    });
+
+    test('ReductionSolver Delta->Star computes exact vertex-matched star impedances', () {
+      // Triangle (n1, n2, n3) with edges given in order (n1-n2)=10, (n1-n3)=20, (n2-n3)=30
+      // Sum = 60 => Z_n1 = 10*20/60 = 3.333, Z_n2 = 10*30/60 = 5, Z_n3 = 20*30/60 = 10
+      const circuit = Circuit(
+        name: 'Asymmetric Delta',
+        isAc: false,
+        nodes: [
+          CircuitNode(id: 'n0', label: '0', x: 0, y: 0),
+          CircuitNode(id: 'n1', label: '1', x: 100, y: 0),
+          CircuitNode(id: 'n2', label: '2', x: 100, y: 100),
+          CircuitNode(id: 'n3', label: '3', x: 200, y: 50),
+        ],
+        branches: [
+          CircuitBranch(
+            id: 'src',
+            name: 'E',
+            fromNodeId: 'n0',
+            toNodeId: 'n3',
+            rOhm: 1,
+            eMagnitude: 12,
+            eAlignedWithBranch: true,
+          ),
+          // Intentionally place (n1,n3) as second edge before (n2,n3)
+          CircuitBranch(id: 'd12', name: '12', fromNodeId: 'n1', toNodeId: 'n2', rOhm: 10),
+          CircuitBranch(id: 'd13', name: '13', fromNodeId: 'n1', toNodeId: 'n3', rOhm: 20),
+          CircuitBranch(id: 'd23', name: '23', fromNodeId: 'n2', toNodeId: 'n3', rOhm: 30),
+          CircuitBranch(id: 'b01', name: '01', fromNodeId: 'n0', toNodeId: 'n1', rOhm: 5),
+          CircuitBranch(id: 'b02', name: '02', fromNodeId: 'n0', toNodeId: 'n2', rOhm: 5),
+        ],
+        referenceNodeId: 'n0',
+      );
+
+      final sol = CircuitSolver.solve(
+        circuit,
+        CalculationMethod.equivalentReduction,
+      );
+      final deltaStep = sol.steps.firstWhere((s) => s.title.contains('Δ → Y'));
+      final eq = deltaStep.latexEquations.last;
+      expect(eq, contains('Z_{1} = 3.333'));
+      expect(eq, contains('Z_{2} = 5'));
+      expect(eq, contains('Z_{3} = 10'));
+    });
+
+    test('Thevenin & Superposition handle current-source open-circuiting cleanly', () {
+      // Two current sources: opening J2 splits (n2, r2) from n1 during Z_eq / superposition!
+      const circuit = Circuit(
+        name: 'Two J sources',
+        isAc: false,
+        nodes: [
+          CircuitNode(id: 'n0', label: '0', x: 0, y: 0),
+          CircuitNode(id: 'n1', label: '1', x: 100, y: 0),
+          CircuitNode(id: 'n2', label: '2', x: 200, y: 0),
+          CircuitNode(id: 'n3', label: '3', x: 300, y: 0),
+        ],
+        branches: [
+          CircuitBranch(
+            id: 'j1',
+            name: 'J1',
+            fromNodeId: 'n0',
+            toNodeId: 'n1',
+            hasCurrentSource: true,
+            jMagnitude: 2,
+          ),
+          CircuitBranch(
+            id: 'r1',
+            name: 'R1',
+            fromNodeId: 'n1',
+            toNodeId: 'n0',
+            rOhm: 10,
+          ),
+          CircuitBranch(
+            id: 'r_load',
+            name: 'RL',
+            fromNodeId: 'n1',
+            toNodeId: 'n0',
+            rOhm: 20,
+          ),
+          CircuitBranch(
+            id: 'j2',
+            name: 'J2',
+            fromNodeId: 'n1',
+            toNodeId: 'n2',
+            hasCurrentSource: true,
+            jMagnitude: 1,
+          ),
+          CircuitBranch(
+            id: 'r2',
+            name: 'R2',
+            fromNodeId: 'n2',
+            toNodeId: 'n3',
+            rOhm: 5,
+          ),
+          CircuitBranch(
+            id: 'r3',
+            name: 'R3',
+            fromNodeId: 'n3',
+            toNodeId: 'n0',
+            rOhm: 5,
+          ),
+        ],
+        referenceNodeId: 'n0',
+        targetBranchId: 'r_load',
+      );
+
+      final baseline =
+          CircuitSolver.solve(circuit, CalculationMethod.nodalPotentials);
+      final sup = CircuitSolver.solve(circuit, CalculationMethod.superposition);
+      final thev =
+          CircuitSolver.solve(circuit, CalculationMethod.theveninNorton);
+
+      for (final b in circuit.branches) {
+        expect(
+          (sup.branchResults[b.id]!.current -
+                  baseline.branchResults[b.id]!.current)
+              .abs,
+          lessThan(1e-6),
+        );
+        expect(
+          (thev.branchResults[b.id]!.current -
+                  baseline.branchResults[b.id]!.current)
+              .abs,
+          lessThan(1e-6),
+        );
+      }
+    });
+
+    test('CircuitEditorController supports Undo and Redo', () {
+      final ctrl = CircuitEditorController();
+      expect(ctrl.canUndo, isFalse);
+      expect(ctrl.canRedo, isFalse);
+
+      ctrl.rotateSelectedBranch();
+      expect(ctrl.canUndo, isTrue);
+      expect(ctrl.inspectedBranch.symbolAngleDeg, 45.0);
+
+      ctrl.undo();
+      expect(ctrl.inspectedBranch.symbolAngleDeg, isNull);
+      expect(ctrl.canRedo, isTrue);
+
+      ctrl.redo();
+      expect(ctrl.inspectedBranch.symbolAngleDeg, 45.0);
+      ctrl.dispose();
     });
   });
 }

@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 import '../../core/math/complex.dart';
 import '../../core/model/circuit.dart';
@@ -20,6 +21,7 @@ class CircuitCanvas extends StatefulWidget {
   final CanvasTool activeTool;
   final ValueChanged<Circuit> onCircuitChanged;
   final ValueChanged<Circuit>? onGeometryChanged;
+  final VoidCallback? onGeometryDragStart;
   final ValueChanged<CircuitBranch> onEditBranch;
   final ValueChanged<CircuitBranch>? onSelectBranch;
   final String? selectedBranchId;
@@ -32,6 +34,7 @@ class CircuitCanvas extends StatefulWidget {
     required this.activeTool,
     required this.onCircuitChanged,
     this.onGeometryChanged,
+    this.onGeometryDragStart,
     required this.onEditBranch,
     this.onSelectBranch,
     this.selectedBranchId,
@@ -186,11 +189,15 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
               .where((b) =>
                   b.fromNodeId != hitNode.id && b.toNodeId != hitNode.id)
               .toList();
+          final targetDeleted = widget.circuit.targetBranchId != null &&
+              !remainingBranches
+                  .any((b) => b.id == widget.circuit.targetBranchId);
           widget.onCircuitChanged(
             widget.circuit.copyWith(
               nodes: remainingNodes,
               branches: remainingBranches,
               clearReferenceNode: widget.circuit.referenceNodeId == hitNode.id,
+              clearTargetBranch: targetDeleted,
             ),
           );
         } else if (hitBranch != null && widget.circuit.branches.length > 1) {
@@ -209,9 +216,15 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
 
   void _handlePointerDown(PointerDownEvent event) {
     if (widget.activeTool != CanvasTool.selectMove) return;
+    // Ignore secondary/middle mouse clicks so right-click never triggers drag state
+    final isPrimary = event.kind == PointerDeviceKind.touch ||
+        (event.buttons & kPrimaryMouseButton) != 0;
+    if (!isPrimary) return;
+
     final pos = event.localPosition;
     final hitNode = _hitTestNode(pos);
     if (hitNode != null) {
+      widget.onGeometryDragStart?.call();
       setState(() {
         _draggingNodeId = hitNode.id;
         _isDraggingItem = true;
@@ -221,6 +234,7 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
     final hitBranch = _hitTestBranch(pos);
     if (hitBranch != null) {
       widget.onSelectBranch?.call(hitBranch);
+      widget.onGeometryDragStart?.call();
       setState(() {
         _draggingBranchId = hitBranch.id;
         _isDraggingItem = true;
@@ -459,36 +473,50 @@ class _SchematicPainter extends CustomPainter {
           ..style = PaintingStyle.stroke,
       );
 
-      final hasPassive =
-          !b.hasCurrentSource && !circuit.impedanceOf(b).isZero();
       final double? customAngRad =
           b.symbolAngleDeg != null ? b.symbolAngleDeg! * math.pi / 180.0 : null;
 
+      final syms = <String>[];
       if (b.hasCurrentSource) {
-        final pt = _bezierAt(p0, ctrl, p2, 0.5);
-        final ang = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, 0.5);
-        _drawCurrentSourceSymbol(canvas, pt, ang, b.jAlignedWithBranch);
-        placer.reserve(Rect.fromCenter(center: pt, width: 34, height: 34));
-      } else if (b.hasEmf && hasPassive) {
-        final ptEmf = _bezierAt(p0, ctrl, p2, 0.36);
-        final angEmf = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, 0.36);
-        _drawEmfSymbol(canvas, ptEmf, angEmf, b.eAlignedWithBranch);
-        placer.reserve(Rect.fromCenter(center: ptEmf, width: 34, height: 34));
-
-        final ptZ = _bezierAt(p0, ctrl, p2, 0.64);
-        final angZ = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, 0.64);
-        _drawImpedanceSymbol(canvas, ptZ, angZ, isTarget);
-        placer.reserve(Rect.fromCenter(center: ptZ, width: 42, height: 28));
-      } else if (b.hasEmf) {
-        final pt = _bezierAt(p0, ctrl, p2, 0.5);
-        final ang = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, 0.5);
-        _drawEmfSymbol(canvas, pt, ang, b.eAlignedWithBranch);
-        placer.reserve(Rect.fromCenter(center: pt, width: 34, height: 34));
+        syms.add('J');
       } else {
-        final pt = _bezierAt(p0, ctrl, p2, 0.5);
-        final ang = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, 0.5);
-        _drawImpedanceSymbol(canvas, pt, ang, isTarget);
-        placer.reserve(Rect.fromCenter(center: pt, width: 42, height: 28));
+        if (b.hasEmf) syms.add('E');
+        if (b.rOhm > 0) syms.add('R');
+        if (circuit.isAc) {
+          final xl = b.xlOhmOverride ?? (circuit.omega * b.lHenry);
+          final xc = b.xcOhmOverride ??
+              (b.cFarad > 0 && circuit.omega > 0
+                  ? 1.0 / (circuit.omega * b.cFarad)
+                  : 0.0);
+          if (xl > 1e-9) syms.add('L');
+          if (xc > 1e-9) syms.add('C');
+        }
+        if (syms.isEmpty) syms.add('R');
+      }
+
+      for (var si = 0; si < syms.length; si++) {
+        final t = syms.length == 1
+            ? 0.5
+            : 0.28 + (0.44 * si) / (syms.length - 1);
+        final pt = _bezierAt(p0, ctrl, p2, t);
+        final ang = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, t);
+        switch (syms[si]) {
+          case 'J':
+            _drawCurrentSourceSymbol(canvas, pt, ang, b.jAlignedWithBranch);
+            placer.reserve(Rect.fromCenter(center: pt, width: 34, height: 34));
+          case 'E':
+            _drawEmfSymbol(canvas, pt, ang, b.eAlignedWithBranch);
+            placer.reserve(Rect.fromCenter(center: pt, width: 34, height: 34));
+          case 'L':
+            _drawInductorSymbol(canvas, pt, ang, isTarget);
+            placer.reserve(Rect.fromCenter(center: pt, width: 42, height: 24));
+          case 'C':
+            _drawCapacitorSymbol(canvas, pt, ang, isTarget);
+            placer.reserve(Rect.fromCenter(center: pt, width: 26, height: 28));
+          default:
+            _drawImpedanceSymbol(canvas, pt, ang, isTarget);
+            placer.reserve(Rect.fromCenter(center: pt, width: 42, height: 28));
+        }
       }
 
       final res = solution?.branchResults[b.id];
@@ -645,6 +673,52 @@ class _SchematicPainter extends CustomPainter {
         ..strokeWidth = 2.0
         ..style = PaintingStyle.stroke,
     );
+    canvas.restore();
+  }
+
+  void _drawInductorSymbol(
+      Canvas canvas, Offset center, double angle, bool isTarget) {
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(angle);
+    // Clear underlying wire
+    canvas.drawRect(
+      Rect.fromCenter(center: Offset.zero, width: 38, height: 18),
+      Paint()..color = ext.canvasBg,
+    );
+    final stroke = Paint()
+      ..color = isTarget ? ext.accent : colorScheme.primary
+      ..strokeWidth = 2.1
+      ..style = PaintingStyle.stroke;
+    // 3 semicircular coils
+    for (var i = 0; i < 3; i++) {
+      final cx = -12.0 + i * 12.0;
+      canvas.drawArc(
+        Rect.fromCircle(center: Offset(cx, 0), radius: 6.0),
+        math.pi,
+        math.pi,
+        false,
+        stroke,
+      );
+    }
+    canvas.restore();
+  }
+
+  void _drawCapacitorSymbol(
+      Canvas canvas, Offset center, double angle, bool isTarget) {
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(angle);
+    canvas.drawRect(
+      Rect.fromCenter(center: Offset.zero, width: 10, height: 24),
+      Paint()..color = ext.canvasBg,
+    );
+    final stroke = Paint()
+      ..color = isTarget ? ext.accent : colorScheme.primary
+      ..strokeWidth = 2.3
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(const Offset(-4, -11), const Offset(-4, 11), stroke);
+    canvas.drawLine(const Offset(4, -11), const Offset(4, 11), stroke);
     canvas.restore();
   }
 

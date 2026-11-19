@@ -164,5 +164,8 @@ class _PhasorPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _PhasorPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _PhasorPainter oldDelegate) =>
+      oldDelegate.results != results ||
+      oldDelegate.axisColor != axisColor ||
+      oldDelegate.textColor != textColor;
 }

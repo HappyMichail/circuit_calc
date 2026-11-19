@@ -231,5 +231,66 @@ void main() {
     expect(readable, contains('I1'));
     expect(readable, isNot(contains(r'\frac')));
     expect(readable, isNot(contains(r'\text')));
+
+    // PDF export must not crash with Cyrillic branch names & node labels
+    final cyrCircuit = circuit.copyWith(
+      nodes: [
+        circuit.nodes[0].copyWith(label: 'А'),
+        circuit.nodes[1].copyWith(label: 'Б'),
+        circuit.nodes[2].copyWith(label: '0'),
+      ],
+      branches: [
+        circuit.branches.first.copyWith(name: 'Нагрузка'),
+        ...circuit.branches.skip(1),
+      ],
+    );
+    final cyrSol =
+        CircuitSolver.solve(cyrCircuit, CalculationMethod.nodalPotentials);
+    final cyrPdf = await CircuitExporter.buildPdf(cyrCircuit, cyrSol);
+    expect(cyrPdf.length, greaterThan(1000));
+  });
+
+  testWidgets('Narrow 360px mobile screen renders AC mode without overflow',
+      (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(360, 740);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const CircuitCalcApp());
+    await tester.pumpAndSettle();
+
+    // Switch to AC mode on mobile
+    await tester.tap(find.text('AC'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('f (Гц)'), findsOneWidget);
+  });
+
+  testWidgets('Deleting a node clears dangling targetBranchId',
+      (WidgetTester tester) async {
+    var circuit = CircuitTemplates.twoLoopDc();
+    // targetBranchId is 'b3' (n1 -> n0)
+    expect(circuit.targetBranchId, 'b3');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CircuitCanvas(
+            circuit: circuit,
+            solution: null,
+            activeTool: CanvasTool.delete,
+            onCircuitChanged: (c) => circuit = c,
+            onEditBranch: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Tap node n1 at (140, 120) to delete it -> incident branch b3 is deleted too
+    await tester.tapAt(const Offset(140, 120));
+    await tester.pumpAndSettle();
+
+    expect(circuit.targetBranchId, isNull);
   });
 }

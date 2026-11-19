@@ -58,8 +58,30 @@ class TheveninNortonSolver {
       jAlignedWithBranch: true,
     ));
 
+    // Extract connected component containing nodeA & nodeB (prunes nodes isolated by open-circuited J)
+    final zAdj = <String, List<String>>{};
+    for (final b in passiveBranches) {
+      zAdj.putIfAbsent(b.fromNodeId, () => []).add(b.toNodeId);
+      zAdj.putIfAbsent(b.toNodeId, () => []).add(b.fromNodeId);
+    }
+    final compNodes = <String>{nodeB.id};
+    final queue = <String>[nodeB.id];
+    while (queue.isNotEmpty) {
+      final cur = queue.removeAt(0);
+      for (final nxt in zAdj[cur] ?? const <String>[]) {
+        if (compNodes.add(nxt)) queue.add(nxt);
+      }
+    }
+    final zNodes =
+        circuit.nodes.where((n) => compNodes.contains(n.id)).toList();
+    final zBranches = passiveBranches
+        .where((b) =>
+            compNodes.contains(b.fromNodeId) && compNodes.contains(b.toNodeId))
+        .toList();
+
     final zCircuit = restCircuit.copyWith(
-      branches: passiveBranches,
+      nodes: zNodes,
+      branches: zBranches,
       referenceNodeId: nodeB.id,
       clearTargetBranch: true,
     );

@@ -5,6 +5,7 @@ import '../../core/model/circuit.dart';
 import '../../core/model/solution.dart';
 import '../theme/app_theme.dart';
 import 'phasor_diagram.dart';
+import 'waveform_chart.dart';
 
 enum _InspectorTab { summary, latex }
 
@@ -528,6 +529,8 @@ class _SolutionPanelState extends State<SolutionPanel> {
         if (sol.isAc) ...[
           const SizedBox(height: 12),
           PhasorDiagram(solution: sol),
+          const SizedBox(height: 12),
+          WaveformChart(solution: sol),
         ],
 
         const SizedBox(height: 12),
