@@ -144,6 +144,18 @@ class _HomeScreenState extends State<HomeScreen>
     _canvasTransform.value = Matrix4.identity();
   }
 
+  void _rotateSelectedBranch() {
+    final target = _inspectedBranch();
+    final nextAngle = ((target.symbolAngleDeg ?? 0.0) + 45.0) % 360.0;
+    final updatedBranches = _circuit.branches
+        .map((b) =>
+            b.id == target.id ? b.copyWith(symbolAngleDeg: nextAngle) : b)
+        .toList();
+    setState(() {
+      _circuit = _circuit.copyWith(branches: updatedBranches);
+    });
+  }
+
   Future<void> _handleProjectAction(String action) async {
     switch (action) {
       case 'new':
@@ -249,10 +261,14 @@ class _HomeScreenState extends State<HomeScreen>
 
     try {
       var targetPath = rawPath;
+      final sep = Platform.pathSeparator;
+      if (!targetPath.contains('\\') && !targetPath.contains('/')) {
+        final dir = ProjectStorage.defaultProjectsDirectory().path;
+        targetPath = '$dir$sep$targetPath';
+      }
       if (Directory(targetPath).existsSync() ||
           targetPath.endsWith('\\') ||
           targetPath.endsWith('/')) {
-        final sep = Platform.pathSeparator;
         final cleanDir = targetPath.endsWith('\\') || targetPath.endsWith('/')
             ? targetPath.substring(0, targetPath.length - 1)
             : targetPath;
@@ -282,6 +298,37 @@ class _HomeScreenState extends State<HomeScreen>
       setState(() => _circuit = updatedCircuit);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Проект сохранён: ${file.path}')),
+      );
+    } on PathAccessException catch (_) {
+      if (!mounted) return;
+      final fallbackPath = ProjectStorage.defaultProjectFilePath(
+        newName.isEmpty ? _circuit.name : newName,
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 6),
+          content: const Text(
+            'Нет прав на запись в выбранную папку (например, корень диска).',
+          ),
+          action: SnackBarAction(
+            label: 'В Документы',
+            onPressed: () async {
+              final f = File(fallbackPath);
+              await f.parent.create(recursive: true);
+              await f.writeAsString(ProjectStorage.encode(SavedProject(
+                circuit: newName.isEmpty
+                    ? _circuit
+                    : _circuit.copyWith(name: newName),
+                method: _method,
+                acBaseMethod: _acBaseMethod,
+              )));
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Проект сохранён: ${f.path}')),
+              );
+            },
+          ),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -1149,6 +1196,13 @@ class _HomeScreenState extends State<HomeScreen>
                 ),
               ),
               const SizedBox(width: 8),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Повернуть элемент на 45°',
+                onPressed: _rotateSelectedBranch,
+                icon: const Icon(Icons.rotate_right, size: 18),
+              ),
+              const SizedBox(width: 4),
               OutlinedButton(
                 onPressed: () => _editBranch(inspected),
                 child: const Text('Изменить...'),
@@ -1328,6 +1382,13 @@ class _HomeScreenState extends State<HomeScreen>
               const SizedBox(height: 8),
               Row(
                 children: [
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Повернуть на 45°',
+                    onPressed: _rotateSelectedBranch,
+                    icon: const Icon(Icons.rotate_right, size: 20),
+                  ),
+                  const SizedBox(width: 4),
                   Expanded(
                     child: OutlinedButton(
                       onPressed: () => _editBranch(inspected),
@@ -1360,6 +1421,12 @@ class _HomeScreenState extends State<HomeScreen>
       _toolBtn(CanvasTool.addNode, Icons.add_circle_outline, 'Добавить узел', cs),
       _toolBtn(CanvasTool.addBranch, Icons.timeline, 'Добавить ветвь', cs),
       _toolBtn(CanvasTool.delete, Icons.delete_outline, 'Удалить', cs),
+      IconButton(
+        visualDensity: VisualDensity.compact,
+        tooltip: 'Повернуть элемент на 45°',
+        onPressed: _rotateSelectedBranch,
+        icon: const Icon(Icons.rotate_right, size: 18),
+      ),
       if (!vertical) ...[
         Container(width: 1, height: 22, color: ext.outline),
         IconButton(

@@ -345,7 +345,11 @@ void main() {
       final base = CircuitTemplates.resonantAc();
       final custom = base.copyWith(
         branches: [
-          base.branches.first.copyWith(controlX: 155.5, controlY: 210.0),
+          base.branches.first.copyWith(
+            controlX: 155.5,
+            controlY: 210.0,
+            symbolAngleDeg: 90.0,
+          ),
           ...base.branches.skip(1),
         ],
       );
@@ -367,6 +371,7 @@ void main() {
       expect(restored.circuit.targetBranchId, custom.targetBranchId);
       expect(restored.circuit.branches.first.controlX, 155.5);
       expect(restored.circuit.branches.first.controlY, 210.0);
+      expect(restored.circuit.branches.first.symbolAngleDeg, 90.0);
       expect(restored.circuit.branches[1].lHenry, 0.05);
       expect(restored.circuit.branches[2].cFarad, 0.0002);
     });

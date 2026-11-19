@@ -89,6 +89,7 @@ class ProjectStorage {
         'jAlignedWithBranch': b.jAlignedWithBranch,
         if (b.controlX != null) 'controlX': b.controlX,
         if (b.controlY != null) 'controlY': b.controlY,
+        if (b.symbolAngleDeg != null) 'symbolAngleDeg': b.symbolAngleDeg,
       };
 
   static CircuitBranch branchFromJson(Map<String, dynamic> j) => CircuitBranch(
@@ -110,6 +111,7 @@ class ProjectStorage {
         jAlignedWithBranch: j['jAlignedWithBranch'] as bool? ?? true,
         controlX: (j['controlX'] as num?)?.toDouble(),
         controlY: (j['controlY'] as num?)?.toDouble(),
+        symbolAngleDeg: (j['symbolAngleDeg'] as num?)?.toDouble(),
       );
 
   static Map<String, dynamic> circuitToJson(Circuit c) => {

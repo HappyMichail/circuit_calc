@@ -461,29 +461,32 @@ class _SchematicPainter extends CustomPainter {
 
       final hasPassive =
           !b.hasCurrentSource && !circuit.impedanceOf(b).isZero();
+      final double? customAngRad =
+          b.symbolAngleDeg != null ? b.symbolAngleDeg! * math.pi / 180.0 : null;
+
       if (b.hasCurrentSource) {
         final pt = _bezierAt(p0, ctrl, p2, 0.5);
-        final ang = _tangentAngleAt(p0, ctrl, p2, 0.5);
+        final ang = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, 0.5);
         _drawCurrentSourceSymbol(canvas, pt, ang, b.jAlignedWithBranch);
         placer.reserve(Rect.fromCenter(center: pt, width: 34, height: 34));
       } else if (b.hasEmf && hasPassive) {
         final ptEmf = _bezierAt(p0, ctrl, p2, 0.36);
-        final angEmf = _tangentAngleAt(p0, ctrl, p2, 0.36);
+        final angEmf = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, 0.36);
         _drawEmfSymbol(canvas, ptEmf, angEmf, b.eAlignedWithBranch);
         placer.reserve(Rect.fromCenter(center: ptEmf, width: 34, height: 34));
 
         final ptZ = _bezierAt(p0, ctrl, p2, 0.64);
-        final angZ = _tangentAngleAt(p0, ctrl, p2, 0.64);
+        final angZ = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, 0.64);
         _drawImpedanceSymbol(canvas, ptZ, angZ, isTarget);
         placer.reserve(Rect.fromCenter(center: ptZ, width: 42, height: 28));
       } else if (b.hasEmf) {
         final pt = _bezierAt(p0, ctrl, p2, 0.5);
-        final ang = _tangentAngleAt(p0, ctrl, p2, 0.5);
+        final ang = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, 0.5);
         _drawEmfSymbol(canvas, pt, ang, b.eAlignedWithBranch);
         placer.reserve(Rect.fromCenter(center: pt, width: 34, height: 34));
       } else {
         final pt = _bezierAt(p0, ctrl, p2, 0.5);
-        final ang = _tangentAngleAt(p0, ctrl, p2, 0.5);
+        final ang = customAngRad ?? _tangentAngleAt(p0, ctrl, p2, 0.5);
         _drawImpedanceSymbol(canvas, pt, ang, isTarget);
         placer.reserve(Rect.fromCenter(center: pt, width: 42, height: 28));
       }

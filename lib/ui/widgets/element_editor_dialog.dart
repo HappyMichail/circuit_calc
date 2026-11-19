@@ -50,11 +50,13 @@ class _ElementEditorDialogState extends State<ElementEditorDialog> {
   late bool _eAligned;
   late bool _jAligned;
   late bool _setAsTarget;
+  double? _symbolAngleDeg;
 
   @override
   void initState() {
     super.initState();
     final b = widget.branch;
+    _symbolAngleDeg = b.symbolAngleDeg;
     _reactiveMode =
         (b.xlOhmOverride != null || b.xcOhmOverride != null) &&
                 b.lHenry == 0 &&
@@ -338,6 +340,27 @@ class _ElementEditorDialogState extends State<ElementEditorDialog> {
                   ),
                 ],
                 const Divider(),
+                const Text('Поворот элемента на схеме'),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    ChoiceChip(
+                      label: const Text('Авто'),
+                      selected: _symbolAngleDeg == null,
+                      onSelected: (_) => setState(() => _symbolAngleDeg = null),
+                    ),
+                    for (final deg in [0.0, 45.0, 90.0, 135.0])
+                      ChoiceChip(
+                        label: Text('${deg.toInt()}°'),
+                        selected: _symbolAngleDeg == deg,
+                        onSelected: (_) =>
+                            setState(() => _symbolAngleDeg = deg),
+                      ),
+                  ],
+                ),
+                const Divider(),
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Целевая ветвь (для Тевенина / Нортона)'),
@@ -391,6 +414,8 @@ class _ElementEditorDialogState extends State<ElementEditorDialog> {
               jMagnitude: _tryParse(_jMagCtrl.text)!,
               jPhaseDeg: _tryParse(_jPhaseCtrl.text)!,
               jAlignedWithBranch: _jAligned,
+              symbolAngleDeg: _symbolAngleDeg,
+              clearSymbolAngle: _symbolAngleDeg == null,
             );
             Navigator.of(context).pop(
               ElementEditorResult(updated, setAsTarget: _setAsTarget),

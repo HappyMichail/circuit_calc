@@ -237,29 +237,30 @@ class CircuitExporter {
       );
 
       final hasPassive = !b.hasCurrentSource && !circuit.impedanceOf(b).isZero();
+      final customDeg = b.symbolAngleDeg;
       if (b.hasCurrentSource) {
         final (sx, sy) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
-        final ang = _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
+        final ang = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
         _svgCurrentSource(buf, sx, sy, ang, b.jAlignedWithBranch);
         placer.reserve(sx, sy, 32, 32);
       } else if (b.hasEmf && hasPassive) {
         final (ex, ey) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.36);
-        final angE = _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.36);
+        final angE = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.36);
         _svgEmf(buf, ex, ey, angE, b.eAlignedWithBranch);
         placer.reserve(ex, ey, 32, 32);
 
         final (zx, zy) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.64);
-        final angZ = _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.64);
+        final angZ = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.64);
         _svgImpedance(buf, zx, zy, angZ, isTarget);
         placer.reserve(zx, zy, 38, 24);
       } else if (b.hasEmf) {
         final (ex, ey) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
-        final angE = _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
+        final angE = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
         _svgEmf(buf, ex, ey, angE, b.eAlignedWithBranch);
         placer.reserve(ex, ey, 32, 32);
       } else {
         final (zx, zy) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
-        final angZ = _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
+        final angZ = customDeg ?? _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
         _svgImpedance(buf, zx, zy, angZ, isTarget);
         placer.reserve(zx, zy, 38, 24);
       }
