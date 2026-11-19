@@ -50,3 +50,6 @@ app.*.map.json
 # Local logs and temp dir
 flutter_*.log
 .tmp/
+
+circuit_calc_*.pdf
+circuit_calc_*.svg
