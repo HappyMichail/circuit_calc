@@ -178,7 +178,22 @@ class _HomeScreenState extends State<HomeScreen>
     if (chosenPath == null || chosenPath.isEmpty || !mounted) return;
 
     try {
-      final file = File(chosenPath);
+      var targetPath = chosenPath;
+      if (Directory(targetPath).existsSync() ||
+          targetPath.endsWith('\\') ||
+          targetPath.endsWith('/')) {
+        final sep = Platform.pathSeparator;
+        final cleanDir = targetPath.endsWith('\\') || targetPath.endsWith('/')
+            ? targetPath.substring(0, targetPath.length - 1)
+            : targetPath;
+        final fileName =
+            CircuitExporter.defaultExportPath(extType).split(sep).last;
+        targetPath = '$cleanDir$sep$fileName';
+      } else if (!targetPath.toLowerCase().endsWith('.$extType')) {
+        targetPath = '$targetPath.$extType';
+      }
+
+      final file = File(targetPath);
       await file.parent.create(recursive: true);
       if (extType == 'svg') {
         final svg = CircuitExporter.buildSvg(_circuit, _solution);
@@ -1124,7 +1139,7 @@ class _HomeScreenState extends State<HomeScreen>
   String _hintForTool(CanvasTool tool) {
     switch (tool) {
       case CanvasTool.selectMove:
-        return 'ПКМ по ветви — параметры, по узлу — базовый (φ=0). Перетаскивание — сдвиг узлов и элементов.';
+        return 'ЛКМ — выбор/перетаскивание. ПКМ по ветви — параметры, по узлу — базовый (φ=0).';
       case CanvasTool.addNode:
         return 'Нажмите на свободное место холста, чтобы добавить новый узел.';
       case CanvasTool.addBranch:

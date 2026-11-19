@@ -135,7 +135,6 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
       case CanvasTool.selectMove:
         if (hitBranch != null) {
           widget.onSelectBranch?.call(hitBranch);
-          widget.onEditBranch(hitBranch);
         } else if (hitNode != null) {
           widget.onCircuitChanged(
             widget.circuit.copyWith(referenceNodeId: hitNode.id),

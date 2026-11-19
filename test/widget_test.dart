@@ -157,9 +157,10 @@ void main() {
     expect(circuit.branches.first.controlY!, greaterThan(150));
   });
 
-  testWidgets('Right-clicking a branch triggers onEditBranch',
+  testWidgets('Left-click selects branch without editing; right-click edits',
       (WidgetTester tester) async {
     CircuitBranch? edited;
+    CircuitBranch? selected;
     const circuit = Circuit(
       name: 'Right-click test',
       nodes: [
@@ -183,8 +184,9 @@ void main() {
           body: CircuitCanvas(
             circuit: circuit,
             solution: null,
-            activeTool: CanvasTool.addNode,
+            activeTool: CanvasTool.selectMove,
             onCircuitChanged: (_) {},
+            onSelectBranch: (b) => selected = b,
             onEditBranch: (b) => edited = b,
           ),
         ),
@@ -192,6 +194,13 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    // Left-click selects only
+    await tester.tapAt(const Offset(200, 100));
+    await tester.pumpAndSettle();
+    expect(selected?.id, 'b1');
+    expect(edited, isNull);
+
+    // Right-click opens editor
     await tester.tapAt(const Offset(200, 100), buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();
 
