@@ -454,8 +454,8 @@ class CircuitExporter {
                 pw.Text(step.description, style: const pw.TextStyle(fontSize: 9)),
               for (final eq in step.latexEquations)
                 pw.Padding(
-                  padding: const pw.EdgeInsets.only(left: 8, top: 2),
-                  child: pw.Text(eq, style: const pw.TextStyle(fontSize: 8.5)),
+                  padding: const pw.EdgeInsets.only(left: 8, top: 3),
+                  child: _buildPdfEquation(eq),
                 ),
               pw.SizedBox(height: 6),
             ],
@@ -465,6 +465,133 @@ class CircuitExporter {
     );
 
     return doc.save();
+  }
+
+  /// Renders a LaTeX equation into a clean PDF widget (tables for matrices, readable Unicode for formulas).
+  static pw.Widget _buildPdfEquation(String latex) {
+    final pmatrixRe = RegExp(r'\\begin\{pmatrix\}([\s\S]*?)\\end\{pmatrix\}');
+    final matches = pmatrixRe.allMatches(latex).toList();
+    if (matches.length == 3) {
+      final matA = _parseMatrix(matches[0].group(1)!);
+      final vecX = _parseMatrix(matches[1].group(1)!);
+      final vecB = _parseMatrix(matches[2].group(1)!);
+      return pw.Padding(
+        padding: const pw.EdgeInsets.symmetric(vertical: 4),
+        child: pw.Row(
+          crossAxisAlignment: pw.CrossAxisAlignment.center,
+          children: [
+            _pdfMatrixBox(matA),
+            pw.Padding(
+              padding: const pw.EdgeInsets.symmetric(horizontal: 6),
+              child: pw.Text('·', style: const pw.TextStyle(fontSize: 11)),
+            ),
+            _pdfMatrixBox(vecX),
+            pw.Padding(
+              padding: const pw.EdgeInsets.symmetric(horizontal: 6),
+              child: pw.Text('=', style: const pw.TextStyle(fontSize: 11)),
+            ),
+            _pdfMatrixBox(vecB),
+          ],
+        ),
+      );
+    }
+
+    return pw.Text(
+      formatLatexReadable(latex),
+      style: const pw.TextStyle(fontSize: 9.5),
+    );
+  }
+
+  static List<List<String>> _parseMatrix(String body) {
+    return body
+        .split(r'\\')
+        .map((row) => row
+            .split('&')
+            .map((cell) => formatLatexReadable(cell.trim()))
+            .toList())
+        .toList();
+  }
+
+  static pw.Widget _pdfMatrixBox(List<List<String>> rows) {
+    return pw.Container(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      decoration: const pw.BoxDecoration(
+        border: pw.Border(
+          left: pw.BorderSide(width: 1.2, color: PdfColors.grey800),
+          right: pw.BorderSide(width: 1.2, color: PdfColors.grey800),
+        ),
+      ),
+      child: pw.Column(
+        mainAxisSize: pw.MainAxisSize.min,
+        children: [
+          for (final row in rows)
+            pw.Row(
+              mainAxisSize: pw.MainAxisSize.min,
+              children: [
+                for (var i = 0; i < row.length; i++)
+                  pw.Padding(
+                    padding: pw.EdgeInsets.symmetric(
+                        horizontal: row.length > 1 ? 5 : 2, vertical: 1),
+                    child: pw.Text(
+                      row[i],
+                      style: const pw.TextStyle(fontSize: 9),
+                    ),
+                  ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Converts LaTeX math strings into clean Unicode mathematical notation for PDF text.
+  static String formatLatexReadable(String input) {
+    var s = input;
+
+    // Unwrap \text{...} and \underline{...}
+    s = s.replaceAllMapped(RegExp(r'\\text\{([^}]*)\}'), (m) => m.group(1)!);
+    s = s.replaceAllMapped(
+        RegExp(r'\\underline\{([^}]*)\}'), (m) => m.group(1)!);
+
+    // Format subscripts _{...} BEFORE \frac so nested braces inside \frac are flattened.
+    // Use plain digits/text (e.g. φ0, I1, P_ист) because Roboto lacks U+2080..U+2089 glyphs.
+    s = s.replaceAllMapped(RegExp(r'_\{([^}]*)\}'), (m) {
+      final inner = m.group(1)!;
+      if (RegExp(r'^[0-9]+$').hasMatch(inner)) {
+        return inner;
+      }
+      return '_$inner';
+    });
+
+    // Replace \frac{a}{b}
+    final fracRe = RegExp(r'\\frac\{([^{}]+)\}\{([^{}]+)\}');
+    while (fracRe.hasMatch(s)) {
+      s = s.replaceAllMapped(
+        fracRe,
+        (m) => '(${m.group(1)}) / (${m.group(2)})',
+      );
+    }
+
+    // Standard LaTeX symbols -> Unicode (supported by Roboto)
+    s = s
+        .replaceAll(r'\varphi', 'φ')
+        .replaceAll(r'\omega', 'ω')
+        .replaceAll(r'\Sigma', 'Σ')
+        .replaceAll(r'\cdot', '·')
+        .replaceAll(r'\approx', '≈')
+        .replaceAll(r'\angle', '∠')
+        .replaceAll(r'^\circ', '°')
+        .replaceAll(r'\infty', '∞')
+        .replaceAll(r'\quad', '   ')
+        .replaceAll(r'\;', ' ')
+        .replaceAll(r'\,', ' ');
+
+    // Clean superscripts ^{(...)}
+    s = s.replaceAllMapped(RegExp(r'\^\{([^}]*)\}'), (m) => '^${m.group(1)}');
+
+    // Collapse extra whitespace
+    s = s.replaceAll(RegExp(r' {2,}'), ' ').trim();
+    return s;
   }
 
   /// Returns a default writable file path for exporting SVG or PDF.

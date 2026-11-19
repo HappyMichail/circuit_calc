@@ -223,5 +223,13 @@ void main() {
     final pdfBytes = await CircuitExporter.buildPdf(circuit, sol);
     expect(pdfBytes.length, greaterThan(1000));
     expect(String.fromCharCodes(pdfBytes.take(4)), '%PDF');
+
+    final readable = CircuitExporter.formatLatexReadable(
+      r'I_{1} = \frac{\varphi_{0} - \varphi_{1} + (24)}{10} = 1.114\text{ А}',
+    );
+    expect(readable, contains('φ0'));
+    expect(readable, contains('I1'));
+    expect(readable, isNot(contains(r'\frac')));
+    expect(readable, isNot(contains(r'\text')));
   });
 }
