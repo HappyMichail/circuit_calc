@@ -9,6 +9,57 @@ import '../model/circuit.dart';
 import '../model/circuit_branch.dart';
 import '../model/solution.dart';
 
+class _SvgBox {
+  final double x;
+  final double y;
+  final double w;
+  final double h;
+  const _SvgBox(this.x, this.y, this.w, this.h);
+
+  double overlapArea(_SvgBox o) {
+    final ix = math.max(0.0, math.min(x + w, o.x + o.w) - math.max(x, o.x));
+    final iy = math.max(0.0, math.min(y + h, o.y + o.h) - math.max(y, o.y));
+    return ix * iy;
+  }
+}
+
+class _SvgLabelPlacer {
+  final List<_SvgBox> _occupied = [];
+
+  void reserve(double cx, double cy, double w, double h) =>
+      _occupied.add(_SvgBox(cx - w / 2, cy - h / 2, w, h));
+
+  (double cx, double cy) place(
+    double w,
+    double h,
+    List<(double cx, double cy)> candidates,
+  ) {
+    var best = candidates.first;
+    var bestCost = double.infinity;
+    const pad = 4.0;
+
+    for (final c in candidates) {
+      final box =
+          _SvgBox(c.$1 - w / 2 - pad, c.$2 - h / 2 - pad, w + pad * 2, h + pad * 2);
+      var cost = 0.0;
+      for (final occ in _occupied) {
+        cost += box.overlapArea(occ);
+      }
+      if (cost == 0.0) {
+        _occupied.add(box);
+        return c;
+      }
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = c;
+      }
+    }
+    _occupied.add(_SvgBox(
+        best.$1 - w / 2 - pad, best.$2 - h / 2 - pad, w + pad * 2, h + pad * 2));
+    return best;
+  }
+}
+
 class CircuitExporter {
   static String _esc(String s) => s
       .replaceAll('&', '&amp;')
@@ -141,6 +192,24 @@ class CircuitExporter {
 
     final refId = circuit.effectiveReferenceNodeId();
     final targetId = circuit.effectiveTargetBranchId();
+    final placer = _SvgLabelPlacer();
+
+    for (final n in circuit.nodes) {
+      final nx = n.x - ox;
+      final ny = n.y - oy;
+      placer.reserve(nx, ny, 26, n.id == refId ? 42 : 26);
+    }
+
+    final branchLabels = <({
+      CircuitBranch b,
+      double mx,
+      double my,
+      double tx,
+      double ty,
+      double nx,
+      double ny,
+      bool isTarget,
+    })>[];
 
     // Draw branches
     for (final b in circuit.branches) {
@@ -172,55 +241,47 @@ class CircuitExporter {
         final (sx, sy) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
         final ang = _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
         _svgCurrentSource(buf, sx, sy, ang, b.jAlignedWithBranch);
+        placer.reserve(sx, sy, 32, 32);
       } else if (b.hasEmf && hasPassive) {
         final (ex, ey) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.36);
         final angE = _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.36);
         _svgEmf(buf, ex, ey, angE, b.eAlignedWithBranch);
+        placer.reserve(ex, ey, 32, 32);
 
         final (zx, zy) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.64);
         final angZ = _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.64);
         _svgImpedance(buf, zx, zy, angZ, isTarget);
+        placer.reserve(zx, zy, 38, 24);
       } else if (b.hasEmf) {
         final (ex, ey) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
         final angE = _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
         _svgEmf(buf, ex, ey, angE, b.eAlignedWithBranch);
+        placer.reserve(ex, ey, 32, 32);
       } else {
         final (zx, zy) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
         final angZ = _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5);
         _svgImpedance(buf, zx, zy, angZ, isTarget);
+        placer.reserve(zx, zy, 38, 24);
       }
 
-      // Labels
       final (mx, my) = _bezierAt(x0, y0, x1, y1, x2, y2, 0.5);
-      var summaryText =
-          '${b.name}: ${b.summary(isAc: circuit.isAc, omega: circuit.omega)}';
-      if (asciiUnits) {
-        summaryText = summaryText
-            .replaceAll('Ом', 'Ohm')
-            .replaceAll('В', 'V')
-            .replaceAll('А', 'A')
-            .replaceAll('Перемычка', 'Wire');
-      }
-      final summary = _esc(summaryText);
-      buf.writeln(
-        '<text x="${mx.toStringAsFixed(1)}" y="${(my + 28).toStringAsFixed(1)}" '
-        'text-anchor="middle" class="lbl">$summary</text>',
-      );
-
-      final res = solution?.branchResults[b.id];
-      if (res != null) {
-        final star = isTarget ? ' *' : '';
-        final iStr = circuit.isAc
-            ? 'I${b.name}=${res.current.toStringPolar(digits: 2)} A$star'
-            : 'I${b.name}=${Complex.fmt(res.current.re, 2)} A$star';
-        buf.writeln(
-          '<text x="${mx.toStringAsFixed(1)}" y="${(my - 22).toStringAsFixed(1)}" '
-          'text-anchor="middle" class="${isTarget ? 'tgt' : 'curr'}">${_esc(iStr)}</text>',
-        );
-      }
+      final angRad =
+          _tangentDegAt(x0, y0, x1, y1, x2, y2, 0.5) * math.pi / 180.0;
+      final tx = math.cos(angRad);
+      final ty = math.sin(angRad);
+      branchLabels.add((
+        b: b,
+        mx: mx,
+        my: my,
+        tx: tx,
+        ty: ty,
+        nx: -ty,
+        ny: tx,
+        isTarget: isTarget,
+      ));
     }
 
-    // Draw nodes
+    // Draw nodes & non-overlapping potential labels
     for (final n in circuit.nodes) {
       final nx = n.x - ox;
       final ny = n.y - oy;
@@ -249,11 +310,74 @@ class CircuitExporter {
         final potStr = isRef
             ? '$phi${n.label}=0 V'
             : '$phi${n.label}=${pot.toStringRect(digits: 1)} V';
-        final ly = isRef ? ny + 38 : ny - 16;
+        final estW = potStr.length * 6.8 + 8;
+        final (lx, ly) = placer.place(
+          estW,
+          16,
+          isRef
+              ? [
+                  (nx, ny + 38),
+                  (nx, ny - 22),
+                  (nx + 48, ny),
+                  (nx - 48, ny),
+                ]
+              : [
+                  (nx, ny - 22),
+                  (nx, ny + 26),
+                  (nx + 48, ny),
+                  (nx - 48, ny),
+                ],
+        );
         buf.writeln(
-          '<text x="$nx" y="$ly" text-anchor="middle" class="curr">${_esc(potStr)}</text>',
+          '<text x="${lx.toStringAsFixed(1)}" y="${(ly + 4).toStringAsFixed(1)}" '
+          'text-anchor="middle" class="curr">${_esc(potStr)}</text>',
         );
       }
+    }
+
+    // Place non-overlapping branch labels
+    for (final bl in branchLabels) {
+      final res = solution?.branchResults[bl.b.id];
+      if (res != null) {
+        final star = bl.isTarget ? ' *' : '';
+        final iStr = circuit.isAc
+            ? 'I${bl.b.name}=${res.current.toStringPolar(digits: 2)} A$star'
+            : 'I${bl.b.name}=${Complex.fmt(res.current.re, 2)} A$star';
+        final estW = iStr.length * 6.8 + 8;
+        final (lx, ly) = placer.place(estW, 16, [
+          (bl.mx - bl.nx * 26, bl.my - bl.ny * 26),
+          (bl.mx + bl.nx * 26, bl.my + bl.ny * 26),
+          (bl.mx - bl.nx * 44, bl.my - bl.ny * 44),
+          (bl.mx + bl.nx * 44, bl.my + bl.ny * 44),
+          (bl.mx + bl.tx * 34 - bl.nx * 26, bl.my + bl.ty * 34 - bl.ny * 26),
+        ]);
+        buf.writeln(
+          '<text x="${lx.toStringAsFixed(1)}" y="${(ly + 4).toStringAsFixed(1)}" '
+          'text-anchor="middle" class="${bl.isTarget ? 'tgt' : 'curr'}">${_esc(iStr)}</text>',
+        );
+      }
+
+      var summaryText =
+          '${bl.b.name}: ${bl.b.summary(isAc: circuit.isAc, omega: circuit.omega)}';
+      if (asciiUnits) {
+        summaryText = summaryText
+            .replaceAll('Ом', 'Ohm')
+            .replaceAll('В', 'V')
+            .replaceAll('А', 'A')
+            .replaceAll('Перемычка', 'Wire');
+      }
+      final estW = summaryText.length * 6.4 + 8;
+      final (sx, sy) = placer.place(estW, 16, [
+        (bl.mx + bl.nx * 26, bl.my + bl.ny * 26),
+        (bl.mx - bl.nx * 26, bl.my - bl.ny * 26),
+        (bl.mx + bl.nx * 44, bl.my + bl.ny * 44),
+        (bl.mx - bl.nx * 44, bl.my - bl.ny * 44),
+        (bl.mx + bl.tx * 36 + bl.nx * 26, bl.my + bl.ty * 36 + bl.ny * 26),
+      ]);
+      buf.writeln(
+        '<text x="${sx.toStringAsFixed(1)}" y="${(sy + 4).toStringAsFixed(1)}" '
+        'text-anchor="middle" class="lbl">${_esc(summaryText)}</text>',
+      );
     }
 
     // Optional results summary inside SVG

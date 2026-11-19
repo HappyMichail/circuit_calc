@@ -324,6 +324,54 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
   }
 }
 
+class _LabelPlacer {
+  final List<Rect> _occupied = [];
+
+  void reserve(Rect rect) => _occupied.add(rect);
+
+  double _overlapArea(Rect a, Rect b) {
+    final inter = a.intersect(b);
+    if (inter.isEmpty) return 0.0;
+    return inter.width * inter.height;
+  }
+
+  /// Finds the best non-overlapping top-left offset for a box of [size]
+  /// trying [candidates] in priority order.
+  Offset place(Size size, List<Offset> candidates, {double margin = 4.0}) {
+    Offset best = candidates.first;
+    var bestCost = double.infinity;
+
+    for (final c in candidates) {
+      final r = Rect.fromLTWH(
+        c.dx - margin,
+        c.dy - margin,
+        size.width + margin * 2,
+        size.height + margin * 2,
+      );
+      var cost = 0.0;
+      for (final occ in _occupied) {
+        cost += _overlapArea(r, occ);
+      }
+      if (cost == 0.0) {
+        _occupied.add(r);
+        return c;
+      }
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = c;
+      }
+    }
+
+    _occupied.add(Rect.fromLTWH(
+      best.dx - margin,
+      best.dy - margin,
+      size.width + margin * 2,
+      size.height + margin * 2,
+    ));
+    return best;
+  }
+}
+
 class _SchematicPainter extends CustomPainter {
   final Circuit circuit;
   final CircuitSolution? solution;
@@ -359,6 +407,26 @@ class _SchematicPainter extends CustomPainter {
 
     final refId = circuit.effectiveReferenceNodeId();
     final targetId = circuit.effectiveTargetBranchId();
+    final placer = _LabelPlacer();
+
+    // Reserve node circles & ground symbols as obstacles
+    for (final n in circuit.nodes) {
+      final isRef = n.id == refId;
+      placer.reserve(Rect.fromCenter(
+        center: Offset(n.x, n.y),
+        width: 28,
+        height: isRef ? 44 : 28,
+      ));
+    }
+
+    // Draw branches & reserve symbol obstacles
+    final branchGeom = <({
+      CircuitBranch b,
+      Offset mid,
+      Offset normal,
+      Offset tangent,
+      bool isTarget,
+    })>[];
 
     for (final b in circuit.branches) {
       final fromNode = circuit.nodes.firstWhere((n) => n.id == b.fromNodeId);
@@ -391,32 +459,35 @@ class _SchematicPainter extends CustomPainter {
           ..style = PaintingStyle.stroke,
       );
 
-      // Draw sequential symbols along the branch
       final hasPassive =
           !b.hasCurrentSource && !circuit.impedanceOf(b).isZero();
       if (b.hasCurrentSource) {
         final pt = _bezierAt(p0, ctrl, p2, 0.5);
         final ang = _tangentAngleAt(p0, ctrl, p2, 0.5);
         _drawCurrentSourceSymbol(canvas, pt, ang, b.jAlignedWithBranch);
+        placer.reserve(Rect.fromCenter(center: pt, width: 34, height: 34));
       } else if (b.hasEmf && hasPassive) {
         final ptEmf = _bezierAt(p0, ctrl, p2, 0.36);
         final angEmf = _tangentAngleAt(p0, ctrl, p2, 0.36);
         _drawEmfSymbol(canvas, ptEmf, angEmf, b.eAlignedWithBranch);
+        placer.reserve(Rect.fromCenter(center: ptEmf, width: 34, height: 34));
 
         final ptZ = _bezierAt(p0, ctrl, p2, 0.64);
         final angZ = _tangentAngleAt(p0, ctrl, p2, 0.64);
         _drawImpedanceSymbol(canvas, ptZ, angZ, isTarget);
+        placer.reserve(Rect.fromCenter(center: ptZ, width: 42, height: 28));
       } else if (b.hasEmf) {
         final pt = _bezierAt(p0, ctrl, p2, 0.5);
         final ang = _tangentAngleAt(p0, ctrl, p2, 0.5);
         _drawEmfSymbol(canvas, pt, ang, b.eAlignedWithBranch);
+        placer.reserve(Rect.fromCenter(center: pt, width: 34, height: 34));
       } else {
         final pt = _bezierAt(p0, ctrl, p2, 0.5);
         final ang = _tangentAngleAt(p0, ctrl, p2, 0.5);
         _drawImpedanceSymbol(canvas, pt, ang, isTarget);
+        placer.reserve(Rect.fromCenter(center: pt, width: 42, height: 28));
       }
 
-      // Draw branch current arrow at t = 0.22 if solved
       final res = solution?.branchResults[b.id];
       if (res != null && !res.current.isZero(1e-6)) {
         final arrowPt = _bezierAt(p0, ctrl, p2, 0.2);
@@ -428,10 +499,19 @@ class _SchematicPainter extends CustomPainter {
       }
 
       final mid = _bezierAt(p0, ctrl, p2, 0.5);
-      _drawBranchLabels(canvas, mid, b, isTarget);
+      final ang = _tangentAngleAt(p0, ctrl, p2, 0.5);
+      final tangent = Offset(math.cos(ang), math.sin(ang));
+      final normal = Offset(-tangent.dy, tangent.dx);
+      branchGeom.add((
+        b: b,
+        mid: mid,
+        normal: normal,
+        tangent: tangent,
+        isTarget: isTarget,
+      ));
     }
 
-    // Draw nodes
+    // Draw nodes & place non-overlapping potential pills
     for (final n in circuit.nodes) {
       final pos = Offset(n.x, n.y);
       final isRef = n.id == refId;
@@ -467,7 +547,6 @@ class _SchematicPainter extends CustomPainter {
           ..style = PaintingStyle.stroke,
       );
 
-      // Node label inside circle
       final numTp = TextPainter(
         text: TextSpan(
           text: n.label,
@@ -484,7 +563,6 @@ class _SchematicPainter extends CustomPainter {
         pos - Offset(numTp.width / 2, numTp.height / 2),
       );
 
-      // Ground symbol for reference node
       if (isRef) {
         final gp = Paint()
           ..color = ext.accent
@@ -499,23 +577,41 @@ class _SchematicPainter extends CustomPainter {
             pos + const Offset(-3, 30), pos + const Offset(3, 30), gp);
       }
 
-      // Potential pill
       final pot = solution?.nodePotentials[n.id];
       final labelText = pot != null
           ? (isRef
               ? 'φ${n.label} = 0 В (База)'
               : 'φ${n.label} = ${pot.toStringRect(digits: 1)} В')
           : 'Узел ${n.label}';
-      final pillOffset = isRef ? const Offset(-46, 35) : const Offset(-38, -34);
-      _drawTextPill(
+      _drawTextPillPlaced(
         canvas,
+        placer,
         labelText,
-        pos + pillOffset,
+        anchor: pos,
+        preferredOffsets: isRef
+            ? const [
+                Offset(0, 44),
+                Offset(0, -34),
+                Offset(56, 0),
+                Offset(-56, 0),
+              ]
+            : const [
+                Offset(0, -32),
+                Offset(0, 32),
+                Offset(56, 0),
+                Offset(-56, 0),
+              ],
         textColor: isRef ? ext.accent : colorScheme.primary,
         bgColor: ext.surfaceContainer,
         borderColor: isRef ? ext.accent : ext.outline,
         fontSize: 11,
       );
+    }
+
+    // Place non-overlapping branch labels (current pill + element summary)
+    for (final g in branchGeom) {
+      _drawBranchLabelsPlaced(canvas, placer, g.mid, g.normal, g.tangent,
+          g.b, g.isTarget);
     }
   }
 
@@ -622,12 +718,41 @@ class _SchematicPainter extends CustomPainter {
     canvas.restore();
   }
 
-  void _drawBranchLabels(
+  void _drawBranchLabelsPlaced(
     Canvas canvas,
+    _LabelPlacer placer,
     Offset mid,
+    Offset normal,
+    Offset tangent,
     CircuitBranch b,
     bool isTarget,
   ) {
+    final res = solution?.branchResults[b.id];
+    if (res != null) {
+      final star = isTarget ? ' ★' : '';
+      final iStr = circuit.isAc
+          ? 'I${b.name}=${res.current.toStringPolar(digits: 2)} А$star'
+          : 'I${b.name}=${Complex.fmt(res.current.re, 2)} А$star';
+      _drawTextPillPlaced(
+        canvas,
+        placer,
+        iStr,
+        anchor: mid,
+        preferredOffsets: [
+          normal * -30,
+          normal * 30,
+          normal * -52,
+          normal * 52,
+          tangent * 36 + normal * -30,
+          tangent * -36 + normal * -30,
+        ],
+        textColor: isTarget ? ext.accent : colorScheme.primary,
+        bgColor: ext.surfaceContainer.withValues(alpha: 0.92),
+        borderColor: isTarget ? ext.accent : ext.outline,
+        fontSize: 11,
+      );
+    }
+
     final summary = b.summary(isAc: circuit.isAc, omega: circuit.omega);
     final tp = TextPainter(
       text: TextSpan(
@@ -641,30 +766,30 @@ class _SchematicPainter extends CustomPainter {
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    tp.paint(canvas, mid + Offset(-tp.width / 2, 18));
 
-    final res = solution?.branchResults[b.id];
-    if (res != null) {
-      final star = isTarget ? ' ★' : '';
-      final iStr = circuit.isAc
-          ? 'I${b.name}=${res.current.toStringPolar(digits: 2)} А$star'
-          : 'I${b.name}=${Complex.fmt(res.current.re, 2)} А$star';
-      _drawTextPill(
-        canvas,
-        iStr,
-        mid + const Offset(-40, -34),
-        textColor: isTarget ? ext.accent : colorScheme.primary,
-        bgColor: ext.surfaceContainer.withValues(alpha: 0.92),
-        borderColor: isTarget ? ext.accent : ext.outline,
-        fontSize: 11,
-      );
-    }
+    final candidates = <Offset>[
+      for (final d in [
+        normal * 28,
+        normal * -28,
+        normal * 48,
+        normal * -48,
+        tangent * 38 + normal * 28,
+        tangent * -38 + normal * 28,
+        normal * 66,
+      ])
+        Offset(mid.dx + d.dx - tp.width / 2, mid.dy + d.dy - tp.height / 2),
+    ];
+
+    final pos = placer.place(Size(tp.width, tp.height), candidates);
+    tp.paint(canvas, pos);
   }
 
-  void _drawTextPill(
+  void _drawTextPillPlaced(
     Canvas canvas,
-    String text,
-    Offset offset, {
+    _LabelPlacer placer,
+    String text, {
+    required Offset anchor,
+    required List<Offset> preferredOffsets,
     required Color textColor,
     required Color bgColor,
     required Color borderColor,
@@ -683,12 +808,15 @@ class _SchematicPainter extends CustomPainter {
       textDirection: TextDirection.ltr,
     )..layout();
 
-    final rect = Rect.fromLTWH(
-      offset.dx - 6,
-      offset.dy - 3,
-      tp.width + 12,
-      tp.height + 6,
-    );
+    final pillW = tp.width + 12;
+    final pillH = tp.height + 6;
+    final candidates = <Offset>[
+      for (final d in preferredOffsets)
+        Offset(anchor.dx + d.dx - pillW / 2, anchor.dy + d.dy - pillH / 2),
+    ];
+
+    final topLeft = placer.place(Size(pillW, pillH), candidates);
+    final rect = Rect.fromLTWH(topLeft.dx, topLeft.dy, pillW, pillH);
     final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(4));
     canvas.drawRRect(rrect, Paint()..color = bgColor);
     canvas.drawRRect(
@@ -698,7 +826,7 @@ class _SchematicPainter extends CustomPainter {
         ..strokeWidth = 1.0
         ..style = PaintingStyle.stroke,
     );
-    tp.paint(canvas, offset);
+    tp.paint(canvas, topLeft + const Offset(6, 3));
   }
 
   @override
