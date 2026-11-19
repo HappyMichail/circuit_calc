@@ -5,19 +5,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 void main() {
-  testWidgets('CircuitCalcApp renders, switches tabs, and expands detailed steps',
+  testWidgets('CircuitCalcApp mobile layout renders and expands detailed steps',
       (WidgetTester tester) async {
     await tester.pumpWidget(const CircuitCalcApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('Калькулятор электрических цепей (ТОЭ)'), findsOneWidget);
-    expect(find.text('Рассчитать'), findsOneWidget);
+    expect(find.text('CircuitCalc'), findsOneWidget);
+    expect(find.text('Рассчитать →'), findsOneWidget);
 
-    // On default 800x600 test viewport, switch to 'Решение' tab
+    // Switch to 'Решение' tab on 800x600 test viewport
     await tester.tap(find.text('Решение'));
     await tester.pumpAndSettle();
 
-    // Scroll the SolutionPanel ListView down to reveal the toggle button
     await tester.drag(find.byType(ListView), const Offset(0, -350));
     await tester.pumpAndSettle();
 
@@ -28,6 +27,21 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Скрыть подробное решение'), findsOneWidget);
+  });
+
+  testWidgets('CircuitCalcApp desktop workstation layout renders dual-pane',
+      (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const CircuitCalcApp());
+    await tester.pumpAndSettle();
+
+    expect(find.text('CircuitCalc'), findsOneWidget);
+    expect(find.text('Рассчитать'), findsOneWidget);
+    expect(find.text('Результаты расчёта'), findsOneWidget);
+    expect(find.text('Баланс мощностей сошёлся'), findsOneWidget);
   });
 
   testWidgets('ElementEditorDialog preserves L/C values and validates invalid input',
@@ -72,7 +86,6 @@ void main() {
     await tester.tap(find.text('Open'));
     await tester.pumpAndSettle();
 
-    // Save without changes -> lHenry must be preserved, xlOhmOverride must remain null
     await tester.tap(find.text('Сохранить'));
     await tester.pumpAndSettle();
 
@@ -80,7 +93,6 @@ void main() {
     expect(saved!.branch.lHenry, 0.05);
     expect(saved!.branch.xlOhmOverride, isNull);
 
-    // Reopen and enter invalid resistance
     saved = null;
     await tester.tap(find.text('Open'));
     await tester.pumpAndSettle();

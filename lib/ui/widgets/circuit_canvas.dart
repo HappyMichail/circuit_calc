@@ -5,6 +5,7 @@ import '../../core/model/circuit.dart';
 import '../../core/model/circuit_branch.dart';
 import '../../core/model/circuit_node.dart';
 import '../../core/model/solution.dart';
+import '../theme/app_theme.dart';
 
 enum CanvasTool {
   selectMove,
@@ -20,6 +21,9 @@ class CircuitCanvas extends StatefulWidget {
   final ValueChanged<Circuit> onCircuitChanged;
   final ValueChanged<Circuit>? onGeometryChanged;
   final ValueChanged<CircuitBranch> onEditBranch;
+  final ValueChanged<CircuitBranch>? onSelectBranch;
+  final String? selectedBranchId;
+  final TransformationController? transformationController;
 
   const CircuitCanvas({
     super.key,
@@ -29,6 +33,9 @@ class CircuitCanvas extends StatefulWidget {
     required this.onCircuitChanged,
     this.onGeometryChanged,
     required this.onEditBranch,
+    this.onSelectBranch,
+    this.selectedBranchId,
+    this.transformationController,
   });
 
   @override
@@ -52,7 +59,6 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
     return null;
   }
 
-  /// Compute curve control point for parallel branches between the same node pair.
   Offset _branchControlPoint(CircuitBranch b, List<CircuitBranch> allBranches) {
     final from = widget.circuit.nodes.firstWhere((n) => n.id == b.fromNodeId);
     final to = widget.circuit.nodes.firstWhere((n) => n.id == b.toNodeId);
@@ -60,24 +66,23 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
     final p2 = Offset(to.x, to.y);
     final mid = (p1 + p2) / 2;
 
-    // Group branches connecting the same unordered pair of nodes
-    final siblings = allBranches.where((other) =>
-        (other.fromNodeId == b.fromNodeId && other.toNodeId == b.toNodeId) ||
-        (other.fromNodeId == b.toNodeId && other.toNodeId == b.fromNodeId)).toList();
+    final siblings = allBranches
+        .where((other) =>
+            (other.fromNodeId == b.fromNodeId && other.toNodeId == b.toNodeId) ||
+            (other.fromNodeId == b.toNodeId && other.toNodeId == b.fromNodeId))
+        .toList();
 
     if (siblings.length <= 1) return mid;
 
     final idx = siblings.indexWhere((s) => s.id == b.id);
     final offsetIndex = idx - (siblings.length - 1) / 2.0;
 
-    // Canonical direction so opposite-directed parallel branches spread apart
-    final canonical = b.fromNodeId.compareTo(b.toNodeId) <= 0
-        ? (p2 - p1)
-        : (p1 - p2);
+    final canonical =
+        b.fromNodeId.compareTo(b.toNodeId) <= 0 ? (p2 - p1) : (p1 - p2);
     final len = canonical.distance;
     if (len < 1e-3) return mid;
     final perp = Offset(-canonical.dy / len, canonical.dx / len);
-    return mid + perp * (offsetIndex * 70.0);
+    return mid + perp * (offsetIndex * 76.0);
   }
 
   CircuitBranch? _hitTestBranch(Offset pos) {
@@ -89,7 +94,6 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
       final p2 = Offset(to.x, to.y);
       final ctrl = _branchControlPoint(b, widget.circuit.branches);
 
-      // Sample quadratic Bezier
       for (var t = 0.1; t <= 0.9; t += 0.05) {
         final mt = 1 - t;
         final pt = p0 * (mt * mt) + ctrl * (2 * mt * t) + p2 * (t * t);
@@ -109,9 +113,9 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
     switch (widget.activeTool) {
       case CanvasTool.selectMove:
         if (hitBranch != null) {
+          widget.onSelectBranch?.call(hitBranch);
           widget.onEditBranch(hitBranch);
         } else if (hitNode != null) {
-          // Set as reference node on tap
           widget.onCircuitChanged(
             widget.circuit.copyWith(referenceNodeId: hitNode.id),
           );
@@ -166,6 +170,7 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
             widget.circuit.copyWith(
               nodes: remainingNodes,
               branches: remainingBranches,
+              clearReferenceNode: widget.circuit.referenceNodeId == hitNode.id,
             ),
           );
         } else if (hitBranch != null && widget.circuit.branches.length > 1) {
@@ -173,7 +178,10 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
               .where((b) => b.id != hitBranch.id)
               .toList();
           widget.onCircuitChanged(
-            widget.circuit.copyWith(branches: remainingBranches),
+            widget.circuit.copyWith(
+              branches: remainingBranches,
+              clearTargetBranch: widget.circuit.targetBranchId == hitBranch.id,
+            ),
           );
         }
     }
@@ -211,14 +219,13 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
 
   @override
   Widget build(BuildContext context) {
+    final ext = Theme.of(context).extension<CircuitColors>() ??
+        CircuitColors.dark;
+
     return Container(
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerLowest,
-        border: Border.all(color: Theme.of(context).dividerColor),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      clipBehavior: Clip.antiAlias,
+      color: ext.canvasBg,
       child: InteractiveViewer(
+        transformationController: widget.transformationController,
         minScale: 0.5,
         maxScale: 2.5,
         constrained: false,
@@ -229,12 +236,14 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
           onPanUpdate: _handlePanUpdate,
           onPanEnd: _handlePanEnd,
           child: CustomPaint(
-            size: const Size(800, 560),
+            size: const Size(820, 560),
             painter: _SchematicPainter(
               circuit: widget.circuit,
               solution: widget.solution,
               pendingBranchFromId: _pendingBranchFromId,
+              selectedBranchId: widget.selectedBranchId,
               colorScheme: Theme.of(context).colorScheme,
+              ext: ext,
               controlPointBuilder: (b) =>
                   _branchControlPoint(b, widget.circuit.branches),
             ),
@@ -249,25 +258,38 @@ class _SchematicPainter extends CustomPainter {
   final Circuit circuit;
   final CircuitSolution? solution;
   final String? pendingBranchFromId;
+  final String? selectedBranchId;
   final ColorScheme colorScheme;
+  final CircuitColors ext;
   final Offset Function(CircuitBranch) controlPointBuilder;
 
   _SchematicPainter({
     required this.circuit,
     required this.solution,
     required this.pendingBranchFromId,
+    required this.selectedBranchId,
     required this.colorScheme,
+    required this.ext,
     required this.controlPointBuilder,
   });
 
+  Offset _bezierAt(Offset p0, Offset ctrl, Offset p2, double t) {
+    final mt = 1 - t;
+    return p0 * (mt * mt) + ctrl * (2 * mt * t) + p2 * (t * t);
+  }
+
+  double _tangentAngleAt(Offset p0, Offset ctrl, Offset p2, double t) {
+    final d = (ctrl - p0) * (2 * (1 - t)) + (p2 - ctrl) * (2 * t);
+    return math.atan2(d.dy, d.dx);
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
-    _drawGrid(canvas, size);
+    _drawDotGrid(canvas, size);
 
     final refId = circuit.effectiveReferenceNodeId();
     final targetId = circuit.effectiveTargetBranchId();
 
-    // Draw branches
     for (final b in circuit.branches) {
       final fromNode = circuit.nodes.firstWhere((n) => n.id == b.fromNodeId);
       final toNode = circuit.nodes.firstWhere((n) => n.id == b.toNodeId);
@@ -275,25 +297,67 @@ class _SchematicPainter extends CustomPainter {
       final p2 = Offset(toNode.x, toNode.y);
       final ctrl = controlPointBuilder(b);
       final isTarget = b.id == targetId;
-
-      final wirePaint = Paint()
-        ..color = isTarget
-            ? colorScheme.tertiary
-            : colorScheme.onSurface.withValues(alpha: 0.85)
-        ..strokeWidth = isTarget ? 2.8 : 2.0
-        ..style = PaintingStyle.stroke;
+      final isSelected = b.id == selectedBranchId;
 
       final path = Path()
         ..moveTo(p0.dx, p0.dy)
         ..quadraticBezierTo(ctrl.dx, ctrl.dy, p2.dx, p2.dy);
-      canvas.drawPath(path, wirePaint);
 
-      // Midpoint on Bezier (t = 0.5)
-      final mid = p0 * 0.25 + ctrl * 0.5 + p2 * 0.25;
-      final tangent = (p2 - p0);
-      final angle = math.atan2(tangent.dy, tangent.dx);
+      if (isTarget || isSelected) {
+        canvas.drawPath(
+          path,
+          Paint()
+            ..color = ext.accent.withValues(alpha: 0.28)
+            ..strokeWidth = 6.5
+            ..style = PaintingStyle.stroke,
+        );
+      }
 
-      _drawBranchSymbol(canvas, mid, angle, b, isTarget);
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = colorScheme.primary
+          ..strokeWidth = 2.4
+          ..style = PaintingStyle.stroke,
+      );
+
+      // Draw sequential symbols along the branch
+      final hasPassive =
+          !b.hasCurrentSource && !circuit.impedanceOf(b).isZero();
+      if (b.hasCurrentSource) {
+        final pt = _bezierAt(p0, ctrl, p2, 0.5);
+        final ang = _tangentAngleAt(p0, ctrl, p2, 0.5);
+        _drawCurrentSourceSymbol(canvas, pt, ang, b.jAlignedWithBranch);
+      } else if (b.hasEmf && hasPassive) {
+        final ptEmf = _bezierAt(p0, ctrl, p2, 0.36);
+        final angEmf = _tangentAngleAt(p0, ctrl, p2, 0.36);
+        _drawEmfSymbol(canvas, ptEmf, angEmf, b.eAlignedWithBranch);
+
+        final ptZ = _bezierAt(p0, ctrl, p2, 0.64);
+        final angZ = _tangentAngleAt(p0, ctrl, p2, 0.64);
+        _drawImpedanceSymbol(canvas, ptZ, angZ, isTarget);
+      } else if (b.hasEmf) {
+        final pt = _bezierAt(p0, ctrl, p2, 0.5);
+        final ang = _tangentAngleAt(p0, ctrl, p2, 0.5);
+        _drawEmfSymbol(canvas, pt, ang, b.eAlignedWithBranch);
+      } else {
+        final pt = _bezierAt(p0, ctrl, p2, 0.5);
+        final ang = _tangentAngleAt(p0, ctrl, p2, 0.5);
+        _drawImpedanceSymbol(canvas, pt, ang, isTarget);
+      }
+
+      // Draw branch current arrow at t = 0.22 if solved
+      final res = solution?.branchResults[b.id];
+      if (res != null && !res.current.isZero(1e-6)) {
+        final arrowPt = _bezierAt(p0, ctrl, p2, 0.2);
+        var arrowAng = _tangentAngleAt(p0, ctrl, p2, 0.2);
+        if (!circuit.isAc && res.current.re < 0) {
+          arrowAng += math.pi;
+        }
+        _drawFilledArrow(canvas, arrowPt, arrowAng, colorScheme.primary);
+      }
+
+      final mid = _bezierAt(p0, ctrl, p2, 0.5);
       _drawBranchLabels(canvas, mid, b, isTarget);
     }
 
@@ -306,133 +370,186 @@ class _SchematicPainter extends CustomPainter {
       if (isPending) {
         canvas.drawCircle(
           pos,
-          14,
+          17,
           Paint()
-            ..color = colorScheme.primary.withValues(alpha: 0.25)
+            ..color = colorScheme.primary.withValues(alpha: 0.28)
             ..style = PaintingStyle.fill,
         );
       }
 
+      final nodeFill =
+          isRef ? const Color(0xFF78350F) : const Color(0xFF1E40AF);
+      final nodeStroke = isRef ? ext.accent : colorScheme.primary;
+
       canvas.drawCircle(
         pos,
-        7,
+        10.5,
         Paint()
-          ..color = isRef ? colorScheme.secondary : colorScheme.primary
+          ..color = nodeFill
           ..style = PaintingStyle.fill,
       );
       canvas.drawCircle(
         pos,
-        7,
+        10.5,
         Paint()
-          ..color = colorScheme.surface
-          ..strokeWidth = 2
+          ..color = nodeStroke
+          ..strokeWidth = 2.4
           ..style = PaintingStyle.stroke,
+      );
+
+      // Node label inside circle
+      final numTp = TextPainter(
+        text: TextSpan(
+          text: n.label,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      numTp.paint(
+        canvas,
+        pos - Offset(numTp.width / 2, numTp.height / 2),
       );
 
       // Ground symbol for reference node
       if (isRef) {
         final gp = Paint()
-          ..color = colorScheme.secondary
-          ..strokeWidth = 2;
-        canvas.drawLine(pos + const Offset(0, 7), pos + const Offset(0, 17), gp);
+          ..color = ext.accent
+          ..strokeWidth = 2.0;
         canvas.drawLine(
-            pos + const Offset(-10, 17), pos + const Offset(10, 17), gp);
+            pos + const Offset(0, 11), pos + const Offset(0, 22), gp);
         canvas.drawLine(
-            pos + const Offset(-6, 21), pos + const Offset(6, 21), gp);
+            pos + const Offset(-11, 22), pos + const Offset(11, 22), gp);
         canvas.drawLine(
-            pos + const Offset(-2, 25), pos + const Offset(2, 25), gp);
+            pos + const Offset(-7, 26), pos + const Offset(7, 26), gp);
+        canvas.drawLine(
+            pos + const Offset(-3, 30), pos + const Offset(3, 30), gp);
       }
 
-      // Node label + potential
+      // Potential pill
       final pot = solution?.nodePotentials[n.id];
       final labelText = pot != null
-          ? '${n.label} (φ=${pot.toStringRect(digits: 1)} В)'
+          ? (isRef
+              ? 'φ${n.label} = 0 В (База)'
+              : 'φ${n.label} = ${pot.toStringRect(digits: 1)} В')
           : 'Узел ${n.label}';
-      _drawText(
+      final pillOffset = isRef ? const Offset(-46, 35) : const Offset(-38, -34);
+      _drawTextPill(
         canvas,
         labelText,
-        pos + const Offset(10, -20),
-        color: colorScheme.onSurface,
-        fontSize: 12,
-        bold: true,
+        pos + pillOffset,
+        textColor: isRef ? ext.accent : colorScheme.primary,
+        bgColor: ext.surfaceContainer,
+        borderColor: isRef ? ext.accent : ext.outline,
+        fontSize: 11,
       );
     }
   }
 
-  void _drawGrid(Canvas canvas, Size size) {
-    final gridPaint = Paint()
-      ..color = colorScheme.outlineVariant.withValues(alpha: 0.3)
-      ..strokeWidth = 0.7;
-    const step = 20.0;
-    for (double x = 0; x <= size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
-    }
-    for (double y = 0; y <= size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
+  void _drawDotGrid(Canvas canvas, Size size) {
+    final dotPaint = Paint()..color = ext.canvasGrid;
+    const step = 24.0;
+    for (double x = 12; x < size.width; x += step) {
+      for (double y = 12; y < size.height; y += step) {
+        canvas.drawCircle(Offset(x, y), 1.1, dotPaint);
+      }
     }
   }
 
-  void _drawBranchSymbol(
-    Canvas canvas,
-    Offset center,
-    double angle,
-    CircuitBranch b,
-    bool isTarget,
-  ) {
+  void _drawImpedanceSymbol(
+      Canvas canvas, Offset center, double angle, bool isTarget) {
     canvas.save();
     canvas.translate(center.dx, center.dy);
     canvas.rotate(angle);
-
-    final fillPaint = Paint()
-      ..color = colorScheme.surface
-      ..style = PaintingStyle.fill;
-    final strokePaint = Paint()
-      ..color = isTarget ? colorScheme.tertiary : colorScheme.onSurface
-      ..strokeWidth = 2.0
-      ..style = PaintingStyle.stroke;
-
-    if (b.hasCurrentSource) {
-      // Double circle for current source J
-      canvas.drawCircle(Offset.zero, 14, fillPaint);
-      canvas.drawCircle(Offset.zero, 14, strokePaint);
-      canvas.drawCircle(Offset.zero, 10, strokePaint);
-      final dir = b.jAlignedWithBranch ? 1.0 : -1.0;
-      _drawArrowHead(canvas, Offset(6 * dir, 0), dir > 0 ? 0 : math.pi,
-          strokePaint.color);
-    } else if (b.hasEmf) {
-      // Circle with arrow for EMF E
-      canvas.drawCircle(Offset.zero, 14, fillPaint);
-      canvas.drawCircle(Offset.zero, 14, strokePaint);
-      final dir = b.eAlignedWithBranch ? 1.0 : -1.0;
-      canvas.drawLine(const Offset(-9, 0), const Offset(9, 0), strokePaint);
-      _drawArrowHead(canvas, Offset(9 * dir, 0), dir > 0 ? 0 : math.pi,
-          strokePaint.color);
-    } else {
-      // Resistor / Impedance rectangle
-      final rect = Rect.fromCenter(center: Offset.zero, width: 32, height: 14);
-      canvas.drawRect(rect, fillPaint);
-      canvas.drawRect(rect, strokePaint);
-    }
-
+    final rect = Rect.fromCenter(center: Offset.zero, width: 38, height: 18);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(2)),
+      Paint()..color = ext.surfaceContainer,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(2)),
+      Paint()
+        ..color = isTarget ? ext.accent : colorScheme.primary
+        ..strokeWidth = 2.0
+        ..style = PaintingStyle.stroke,
+    );
     canvas.restore();
   }
 
-  void _drawArrowHead(Canvas canvas, Offset tip, double angle, Color color) {
-    final p = Paint()
-      ..color = color
-      ..strokeWidth = 2
+  void _drawEmfSymbol(
+      Canvas canvas, Offset center, double angle, bool aligned) {
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(angle);
+    canvas.drawCircle(
+      Offset.zero,
+      15,
+      Paint()..color = ext.surfaceContainer,
+    );
+    canvas.drawCircle(
+      Offset.zero,
+      15,
+      Paint()
+        ..color = ext.accent
+        ..strokeWidth = 2.0
+        ..style = PaintingStyle.stroke,
+    );
+    final dir = aligned ? 1.0 : -1.0;
+    canvas.drawLine(
+      const Offset(-10, 0),
+      const Offset(10, 0),
+      Paint()
+        ..color = ext.accent
+        ..strokeWidth = 2.0,
+    );
+    _drawFilledArrow(
+      canvas,
+      Offset(10 * dir, 0),
+      dir > 0 ? 0 : math.pi,
+      ext.accent,
+      size: 6,
+    );
+    canvas.restore();
+  }
+
+  void _drawCurrentSourceSymbol(
+      Canvas canvas, Offset center, double angle, bool aligned) {
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(angle);
+    canvas.drawCircle(Offset.zero, 15, Paint()..color = ext.surfaceContainer);
+    final stroke = Paint()
+      ..color = ext.accent
+      ..strokeWidth = 1.8
       ..style = PaintingStyle.stroke;
-    const len = 6.0;
-    canvas.drawLine(
-      tip,
-      tip + Offset(-len * math.cos(angle - 0.5), -len * math.sin(angle - 0.5)),
-      p,
+    canvas.drawCircle(Offset.zero, 15, stroke);
+    canvas.drawCircle(Offset.zero, 11, stroke);
+    final dir = aligned ? 1.0 : -1.0;
+    _drawFilledArrow(
+      canvas,
+      Offset(7 * dir, 0),
+      dir > 0 ? 0 : math.pi,
+      ext.accent,
+      size: 6,
     );
-    canvas.drawLine(
-      tip,
-      tip + Offset(-len * math.cos(angle + 0.5), -len * math.sin(angle + 0.5)),
-      p,
-    );
+    canvas.restore();
+  }
+
+  void _drawFilledArrow(Canvas canvas, Offset tip, double angle, Color color,
+      {double size = 8}) {
+    canvas.save();
+    canvas.translate(tip.dx, tip.dy);
+    canvas.rotate(angle);
+    final path = Path()
+      ..moveTo(size * 0.5, 0)
+      ..lineTo(-size * 0.7, -size * 0.5)
+      ..lineTo(-size * 0.7, size * 0.5)
+      ..close();
+    canvas.drawPath(path, Paint()..color = color);
+    canvas.restore();
   }
 
   void _drawBranchLabels(
@@ -442,68 +559,83 @@ class _SchematicPainter extends CustomPainter {
     bool isTarget,
   ) {
     final summary = b.summary(isAc: circuit.isAc, omega: circuit.omega);
-    _drawText(
-      canvas,
-      '${b.name}: $summary',
-      mid + const Offset(-45, 16),
-      color: isTarget ? colorScheme.tertiary : colorScheme.onSurfaceVariant,
-      fontSize: 11,
-      bold: isTarget,
-    );
+    final tp = TextPainter(
+      text: TextSpan(
+        text: '${b.name}: $summary',
+        style: TextStyle(
+          color: isTarget ? ext.accent : colorScheme.onSurfaceVariant,
+          fontSize: 11,
+          fontFamily: 'monospace',
+          fontWeight: isTarget ? FontWeight.w600 : FontWeight.w500,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, mid + Offset(-tp.width / 2, 18));
 
     final res = solution?.branchResults[b.id];
     if (res != null) {
+      final star = isTarget ? ' ★' : '';
       final iStr = circuit.isAc
-          ? 'I=${res.current.toStringPolar(digits: 2)} А'
-          : 'I=${Complex.fmt(res.current.re, 2)} А';
-      _drawText(
+          ? 'I${b.name}=${res.current.toStringPolar(digits: 2)} А$star'
+          : 'I${b.name}=${Complex.fmt(res.current.re, 2)} А$star';
+      _drawTextPill(
         canvas,
         iStr,
-        mid + const Offset(-35, -30),
-        color: colorScheme.primary,
+        mid + const Offset(-40, -34),
+        textColor: isTarget ? ext.accent : colorScheme.primary,
+        bgColor: ext.surfaceContainer.withValues(alpha: 0.92),
+        borderColor: isTarget ? ext.accent : ext.outline,
         fontSize: 11,
-        bold: true,
-        bgColor: colorScheme.primaryContainer.withValues(alpha: 0.85),
       );
     }
   }
 
-  void _drawText(
+  void _drawTextPill(
     Canvas canvas,
     String text,
     Offset offset, {
-    required Color color,
-    double fontSize = 12,
-    bool bold = false,
-    Color? bgColor,
+    required Color textColor,
+    required Color bgColor,
+    required Color borderColor,
+    double fontSize = 11,
   }) {
     final tp = TextPainter(
       text: TextSpan(
         text: text,
         style: TextStyle(
-          color: color,
+          color: textColor,
           fontSize: fontSize,
-          fontWeight: bold ? FontWeight.w600 : FontWeight.normal,
+          fontFamily: 'monospace',
+          fontWeight: FontWeight.w600,
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
 
-    if (bgColor != null) {
-      final rect = Rect.fromLTWH(
-        offset.dx - 4,
-        offset.dy - 2,
-        tp.width + 8,
-        tp.height + 4,
-      );
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(rect, const Radius.circular(4)),
-        Paint()..color = bgColor,
-      );
-    }
+    final rect = Rect.fromLTWH(
+      offset.dx - 6,
+      offset.dy - 3,
+      tp.width + 12,
+      tp.height + 6,
+    );
+    final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(4));
+    canvas.drawRRect(rrect, Paint()..color = bgColor);
+    canvas.drawRRect(
+      rrect,
+      Paint()
+        ..color = borderColor
+        ..strokeWidth = 1.0
+        ..style = PaintingStyle.stroke,
+    );
     tp.paint(canvas, offset);
   }
 
   @override
-  bool shouldRepaint(covariant _SchematicPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _SchematicPainter oldDelegate) =>
+      oldDelegate.circuit != circuit ||
+      oldDelegate.solution != solution ||
+      oldDelegate.pendingBranchFromId != pendingBranchFromId ||
+      oldDelegate.selectedBranchId != selectedBranchId ||
+      oldDelegate.colorScheme != colorScheme;
 }
