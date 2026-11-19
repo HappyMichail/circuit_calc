@@ -4,8 +4,10 @@ import '../../core/export/circuit_exporter.dart';
 import '../../core/math/complex.dart';
 import '../../core/model/circuit.dart';
 import '../../core/model/circuit_branch.dart';
+import '../../core/model/circuit_node.dart';
 import '../../core/model/solution.dart';
 import '../../core/solvers/circuit_solver.dart';
+import '../../core/storage/project_storage.dart';
 import '../../core/templates/circuit_templates.dart';
 import '../theme/app_theme.dart';
 import '../widgets/circuit_canvas.dart';
@@ -140,6 +142,256 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _resetZoom() {
     _canvasTransform.value = Matrix4.identity();
+  }
+
+  Future<void> _handleProjectAction(String action) async {
+    switch (action) {
+      case 'new':
+        setState(() {
+          _circuit = const Circuit(
+            name: 'Новый проект',
+            isAc: false,
+            nodes: [
+              CircuitNode(id: 'n0', label: '0', x: 180, y: 260),
+              CircuitNode(id: 'n1', label: '1', x: 380, y: 140),
+            ],
+            branches: [
+              CircuitBranch(
+                id: 'b1',
+                name: '1',
+                fromNodeId: 'n0',
+                toNodeId: 'n1',
+                rOhm: 2,
+                eMagnitude: 12,
+                eAlignedWithBranch: true,
+              ),
+              CircuitBranch(
+                id: 'b2',
+                name: '2',
+                fromNodeId: 'n1',
+                toNodeId: 'n0',
+                rOhm: 10,
+              ),
+            ],
+            referenceNodeId: 'n0',
+            targetBranchId: 'b2',
+          );
+          _selectedBranchId = 'b2';
+          _method = CalculationMethod.nodalPotentials;
+          _freqCtrl.text = '50';
+          _freqError = null;
+        });
+        _solve();
+      case 'save':
+        await _saveProjectDialog();
+      case 'open':
+        await _openProjectDialog();
+    }
+  }
+
+  Future<void> _saveProjectDialog() async {
+    final nameCtrl = TextEditingController(text: _circuit.name);
+    final pathCtrl = TextEditingController(
+      text: ProjectStorage.defaultProjectFilePath(_circuit.name),
+    );
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Сохранить проект'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Название проекта',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                onChanged: (val) {
+                  pathCtrl.text = ProjectStorage.defaultProjectFilePath(val);
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: pathCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Путь к файлу (.ccalc.json)',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+
+    final newName = nameCtrl.text.trim();
+    final rawPath = pathCtrl.text.trim();
+    nameCtrl.dispose();
+    pathCtrl.dispose();
+
+    if (confirmed != true || rawPath.isEmpty || !mounted) return;
+
+    try {
+      var targetPath = rawPath;
+      if (Directory(targetPath).existsSync() ||
+          targetPath.endsWith('\\') ||
+          targetPath.endsWith('/')) {
+        final sep = Platform.pathSeparator;
+        final cleanDir = targetPath.endsWith('\\') || targetPath.endsWith('/')
+            ? targetPath.substring(0, targetPath.length - 1)
+            : targetPath;
+        final fileName = ProjectStorage.defaultProjectFilePath(newName)
+            .split(sep)
+            .last;
+        targetPath = '$cleanDir$sep$fileName';
+      } else if (!targetPath.toLowerCase().endsWith('.json')) {
+        targetPath = '$targetPath.ccalc.json';
+      }
+
+      final updatedCircuit = newName.isEmpty
+          ? _circuit
+          : _circuit.copyWith(name: newName);
+
+      final project = SavedProject(
+        circuit: updatedCircuit,
+        method: _method,
+        acBaseMethod: _acBaseMethod,
+      );
+
+      final file = File(targetPath);
+      await file.parent.create(recursive: true);
+      await file.writeAsString(ProjectStorage.encode(project));
+
+      if (!mounted) return;
+      setState(() => _circuit = updatedCircuit);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Проект сохранён: ${file.path}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка сохранения проекта: $e')),
+      );
+    }
+  }
+
+  Future<void> _openProjectDialog() async {
+    final savedFiles = ProjectStorage.listSavedProjects();
+    final pathCtrl = TextEditingController();
+
+    final selectedPath = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Открыть проект'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (savedFiles.isNotEmpty) ...[
+                Text(
+                  'Сохранённые проекты:',
+                  style: Theme.of(ctx).textTheme.labelLarge,
+                ),
+                const SizedBox(height: 6),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 200),
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: savedFiles.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (_, idx) {
+                      final f = savedFiles[idx];
+                      final fileName =
+                          f.path.split(Platform.pathSeparator).last;
+                      return ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.description_outlined, size: 18),
+                        title: Text(fileName),
+                        subtitle: Text(
+                          f.path,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        onTap: () => Navigator.of(ctx).pop(f.path),
+                      );
+                    },
+                  ),
+                ),
+                const Divider(height: 20),
+              ],
+              TextField(
+                controller: pathCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Или введите путь к файлу (.json)',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final p = pathCtrl.text.trim();
+              if (p.isNotEmpty) Navigator.of(ctx).pop(p);
+            },
+            child: const Text('Открыть'),
+          ),
+        ],
+      ),
+    );
+    pathCtrl.dispose();
+
+    if (selectedPath == null || selectedPath.isEmpty || !mounted) return;
+
+    try {
+      final raw = await File(selectedPath).readAsString();
+      final project = ProjectStorage.decode(raw);
+      project.circuit.validate();
+
+      if (!mounted) return;
+      setState(() {
+        _circuit = project.circuit;
+        _method = project.method;
+        _acBaseMethod = project.acBaseMethod;
+        _selectedBranchId = project.circuit.effectiveTargetBranchId();
+        _freqCtrl.text = project.circuit.frequencyHz.toString();
+        _freqError = null;
+      });
+      _solve();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Проект загружен: ${project.circuit.name}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка загрузки проекта: $e')),
+      );
+    }
   }
 
   Future<void> _exportAs(String extType) async {
@@ -328,122 +580,134 @@ class _HomeScreenState extends State<HomeScreen>
       child: Row(
         children: [
           _buildBrand(context, ext, cs),
-          const Spacer(),
-          // DC / AC toggle
-          SegmentedButton<bool>(
-            showSelectedIcon: false,
-            style: const ButtonStyle(
-              visualDensity: VisualDensity.compact,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-            segments: const [
-              ButtonSegment(value: false, label: Text('DC')),
-              ButtonSegment(value: true, label: Text('AC')),
-            ],
-            selected: {_circuit.isAc},
-            onSelectionChanged: (s) {
-              final isAc = s.first;
-              setState(() {
-                _circuit = _circuit.copyWith(isAc: isAc);
-                if (isAc) {
-                  _method = CalculationMethod.complexMethod;
-                } else if (_method == CalculationMethod.complexMethod) {
-                  _method = CalculationMethod.nodalPotentials;
-                }
-              });
-              _solve();
-            },
-          ),
-          if (_circuit.isAc) ...[
-            const SizedBox(width: 8),
-            SizedBox(
-              width: 96,
-              child: TextField(
-                controller: _freqCtrl,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(
-                  labelText: 'f (Гц)',
-                  errorText: _freqError,
-                  border: const OutlineInputBorder(),
-                  isDense: true,
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                ),
-                onChanged: _onFreqChanged,
-              ),
-            ),
-          ],
-          const SizedBox(width: 10),
-          // Method dropdown
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10),
-            decoration: BoxDecoration(
-              color: cs.surface,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: ext.outline),
-            ),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 260),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<CalculationMethod>(
-                  isDense: true,
-                  isExpanded: true,
-                  value: _method,
-                  items: [
-                    for (final m in CalculationMethod.values)
-                      DropdownMenuItem(
-                        value: m,
-                        child: Text(
-                          m.title,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 13),
+          const SizedBox(width: 12),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // DC / AC toggle
+                  SegmentedButton<bool>(
+                    showSelectedIcon: false,
+                    style: const ButtonStyle(
+                      visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    segments: const [
+                      ButtonSegment(value: false, label: Text('DC')),
+                      ButtonSegment(value: true, label: Text('AC')),
+                    ],
+                    selected: {_circuit.isAc},
+                    onSelectionChanged: (s) {
+                      final isAc = s.first;
+                      setState(() {
+                        _circuit = _circuit.copyWith(isAc: isAc);
+                        if (isAc) {
+                          _method = CalculationMethod.complexMethod;
+                        } else if (_method == CalculationMethod.complexMethod) {
+                          _method = CalculationMethod.nodalPotentials;
+                        }
+                      });
+                      _solve();
+                    },
+                  ),
+                  if (_circuit.isAc) ...[
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      width: 90,
+                      child: TextField(
+                        controller: _freqCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
+                        decoration: InputDecoration(
+                          labelText: 'f (Гц)',
+                          errorText: _freqError,
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 8),
+                        ),
+                        onChanged: _onFreqChanged,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(width: 8),
+                  // Method dropdown
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    decoration: BoxDecoration(
+                      color: cs.surface,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: ext.outline),
+                    ),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 230),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<CalculationMethod>(
+                          isDense: true,
+                          isExpanded: true,
+                          value: _method,
+                          items: [
+                            for (final m in CalculationMethod.values)
+                              DropdownMenuItem(
+                                value: m,
+                                child: Text(
+                                  m.title,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 13),
+                                ),
+                              ),
+                          ],
+                          onChanged: _onMethodChanged,
                         ),
                       ),
+                    ),
+                  ),
+                  if (_method == CalculationMethod.complexMethod) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      decoration: BoxDecoration(
+                        color: cs.surface,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: ext.outline),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<CalculationMethod>(
+                          isDense: true,
+                          value: _acBaseMethod,
+                          items: [
+                            for (final m in CalculationMethod.values.where(
+                                (x) => x != CalculationMethod.complexMethod))
+                              DropdownMenuItem(
+                                value: m,
+                                child: Text(
+                                  'База: ${m.shortTitle}',
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                              ),
+                          ],
+                          onChanged: (m) {
+                            if (m == null) return;
+                            setState(() => _acBaseMethod = m);
+                            _solve();
+                          },
+                        ),
+                      ),
+                    ),
                   ],
-                  onChanged: _onMethodChanged,
-                ),
+                  const SizedBox(width: 8),
+                  _buildProjectButton(ext, cs, showLabel: true),
+                  const SizedBox(width: 6),
+                  _buildTemplatesButton(ext, cs, showLabel: true),
+                  const SizedBox(width: 6),
+                  _buildExportButton(ext, cs, showLabel: true),
+                ],
               ),
             ),
           ),
-          if (_method == CalculationMethod.complexMethod) ...[
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              decoration: BoxDecoration(
-                color: cs.surface,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: ext.outline),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<CalculationMethod>(
-                  isDense: true,
-                  value: _acBaseMethod,
-                  items: [
-                    for (final m in CalculationMethod.values
-                        .where((x) => x != CalculationMethod.complexMethod))
-                      DropdownMenuItem(
-                        value: m,
-                        child: Text(
-                          'База: ${m.shortTitle}',
-                          style: const TextStyle(fontSize: 12),
-                        ),
-                      ),
-                  ],
-                  onChanged: (m) {
-                    if (m == null) return;
-                    setState(() => _acBaseMethod = m);
-                    _solve();
-                  },
-                ),
-              ),
-            ),
-          ],
           const SizedBox(width: 8),
-          _buildTemplatesButton(ext, cs, showLabel: true),
-          const SizedBox(width: 8),
-          _buildExportButton(ext, cs, showLabel: true),
-          const Spacer(),
           IconButton(
             tooltip: 'Переключить тему',
             onPressed: widget.onToggleTheme,
@@ -454,7 +718,7 @@ class _HomeScreenState extends State<HomeScreen>
               size: 20,
             ),
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 4),
           FilledButton.icon(
             onPressed: () => _solve(),
             icon: const Icon(Icons.play_arrow, size: 18),
@@ -505,6 +769,8 @@ class _HomeScreenState extends State<HomeScreen>
                   },
                 ),
                 const SizedBox(width: 6),
+                _buildProjectButton(ext, cs, showLabel: false),
+                const SizedBox(width: 4),
                 _buildTemplatesButton(ext, cs, showLabel: false),
                 const SizedBox(width: 4),
                 _buildExportButton(ext, cs, showLabel: false),
@@ -562,6 +828,70 @@ class _HomeScreenState extends State<HomeScreen>
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildProjectButton(
+    CircuitColors ext,
+    ColorScheme cs, {
+    required bool showLabel,
+  }) {
+    return PopupMenuButton<String>(
+      tooltip: 'Проекты',
+      onSelected: _handleProjectAction,
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: 'new',
+          child: Row(
+            children: [
+              Icon(Icons.note_add_outlined, size: 18),
+              SizedBox(width: 8),
+              Text('Новый проект'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: 'save',
+          child: Row(
+            children: [
+              Icon(Icons.save_outlined, size: 18),
+              SizedBox(width: 8),
+              Text('Сохранить проект (.json)...'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: 'open',
+          child: Row(
+            children: [
+              Icon(Icons.folder_open_outlined, size: 18),
+              SizedBox(width: 8),
+              Text('Открыть проект (.json)...'),
+            ],
+          ),
+        ),
+      ],
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: showLabel ? 10 : 8,
+          vertical: 7,
+        ),
+        decoration: BoxDecoration(
+          color: ext.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: ext.outline),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.folder_outlined, size: 16, color: cs.primary),
+            if (showLabel) ...[
+              const SizedBox(width: 6),
+              const Text('Проект', style: TextStyle(fontSize: 13)),
+            ],
+          ],
+        ),
       ),
     );
   }

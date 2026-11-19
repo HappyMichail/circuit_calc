@@ -4,6 +4,7 @@ import 'package:circuit_calc/core/model/circuit_branch.dart';
 import 'package:circuit_calc/core/model/circuit_node.dart';
 import 'package:circuit_calc/core/model/solution.dart';
 import 'package:circuit_calc/core/solvers/circuit_solver.dart';
+import 'package:circuit_calc/core/storage/project_storage.dart';
 import 'package:circuit_calc/core/templates/circuit_templates.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -338,6 +339,36 @@ void main() {
       expect((a * b), equals(const Complex(11, -2)));
       expect(((a / b) * b).re, closeTo(3.0, 1e-9));
       expect(((a / b) * b).im, closeTo(4.0, 1e-9));
+    });
+
+    test('ProjectStorage round-trips AC circuit with L/C and control points', () {
+      final base = CircuitTemplates.resonantAc();
+      final custom = base.copyWith(
+        branches: [
+          base.branches.first.copyWith(controlX: 155.5, controlY: 210.0),
+          ...base.branches.skip(1),
+        ],
+      );
+      final proj = SavedProject(
+        circuit: custom,
+        method: CalculationMethod.complexMethod,
+        acBaseMethod: CalculationMethod.meshCurrents,
+      );
+
+      final jsonStr = ProjectStorage.encode(proj);
+      final restored = ProjectStorage.decode(jsonStr);
+
+      expect(restored.schemaVersion, 1);
+      expect(restored.method, CalculationMethod.complexMethod);
+      expect(restored.acBaseMethod, CalculationMethod.meshCurrents);
+      expect(restored.circuit.isAc, isTrue);
+      expect(restored.circuit.frequencyHz, custom.frequencyHz);
+      expect(restored.circuit.referenceNodeId, custom.referenceNodeId);
+      expect(restored.circuit.targetBranchId, custom.targetBranchId);
+      expect(restored.circuit.branches.first.controlX, 155.5);
+      expect(restored.circuit.branches.first.controlY, 210.0);
+      expect(restored.circuit.branches[1].lHenry, 0.05);
+      expect(restored.circuit.branches[2].cFarad, 0.0002);
     });
   });
 }
