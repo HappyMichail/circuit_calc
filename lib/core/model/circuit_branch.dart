@@ -27,6 +27,10 @@ class CircuitBranch {
   final double jPhaseDeg;
   final bool jAlignedWithBranch;
 
+  // Optional custom Bezier control point for schematic layout
+  final double? controlX;
+  final double? controlY;
+
   const CircuitBranch({
     required this.id,
     required this.name,
@@ -44,6 +48,8 @@ class CircuitBranch {
     this.jMagnitude = 0.0,
     this.jPhaseDeg = 0.0,
     this.jAlignedWithBranch = true,
+    this.controlX,
+    this.controlY,
   });
 
   bool get hasEmf => !hasCurrentSource && eMagnitude.abs() > 1e-12;
@@ -128,6 +134,9 @@ class CircuitBranch {
     double? jMagnitude,
     double? jPhaseDeg,
     bool? jAlignedWithBranch,
+    double? controlX,
+    double? controlY,
+    bool clearControlPoint = false,
   }) {
     return CircuitBranch(
       id: id ?? this.id,
@@ -148,6 +157,8 @@ class CircuitBranch {
       jMagnitude: jMagnitude ?? this.jMagnitude,
       jPhaseDeg: jPhaseDeg ?? this.jPhaseDeg,
       jAlignedWithBranch: jAlignedWithBranch ?? this.jAlignedWithBranch,
+      controlX: clearControlPoint ? null : (controlX ?? this.controlX),
+      controlY: clearControlPoint ? null : (controlY ?? this.controlY),
     );
   }
 }

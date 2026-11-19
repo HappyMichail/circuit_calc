@@ -44,7 +44,9 @@ class CircuitCanvas extends StatefulWidget {
 
 class _CircuitCanvasState extends State<CircuitCanvas> {
   String? _draggingNodeId;
+  String? _draggingBranchId;
   String? _pendingBranchFromId;
+  bool _isDraggingItem = false;
 
   static const double _gridSize = 20.0;
 
@@ -60,6 +62,9 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
   }
 
   Offset _branchControlPoint(CircuitBranch b, List<CircuitBranch> allBranches) {
+    if (b.controlX != null && b.controlY != null) {
+      return Offset(b.controlX!, b.controlY!);
+    }
     final from = widget.circuit.nodes.firstWhere((n) => n.id == b.fromNodeId);
     final to = widget.circuit.nodes.firstWhere((n) => n.id == b.toNodeId);
     final p1 = Offset(from.x, from.y);
@@ -187,34 +192,79 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
     }
   }
 
-  void _handlePanStart(DragStartDetails details) {
+  void _handlePointerDown(PointerDownEvent event) {
     if (widget.activeTool != CanvasTool.selectMove) return;
-    final hit = _hitTestNode(details.localPosition);
-    if (hit != null) {
-      _draggingNodeId = hit.id;
+    final pos = event.localPosition;
+    final hitNode = _hitTestNode(pos);
+    if (hitNode != null) {
+      setState(() {
+        _draggingNodeId = hitNode.id;
+        _isDraggingItem = true;
+      });
+      return;
+    }
+    final hitBranch = _hitTestBranch(pos);
+    if (hitBranch != null) {
+      widget.onSelectBranch?.call(hitBranch);
+      setState(() {
+        _draggingBranchId = hitBranch.id;
+        _isDraggingItem = true;
+      });
     }
   }
 
-  void _handlePanUpdate(DragUpdateDetails details) {
-    if (_draggingNodeId == null) return;
-    final pos = details.localPosition;
-    final updatedNodes = widget.circuit.nodes.map((n) {
-      if (n.id != _draggingNodeId) return n;
-      return n.copyWith(
-        x: _snap(pos.dx.clamp(40, 1200)),
-        y: _snap(pos.dy.clamp(40, 900)),
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (!_isDraggingItem) return;
+    final pos = event.localPosition;
+    if (_draggingNodeId != null) {
+      final updatedNodes = widget.circuit.nodes.map((n) {
+        if (n.id != _draggingNodeId) return n;
+        return n.copyWith(
+          x: _snap(pos.dx.clamp(40, 1200)),
+          y: _snap(pos.dy.clamp(40, 900)),
+        );
+      }).toList();
+      final updated = widget.circuit.copyWith(nodes: updatedNodes);
+      if (widget.onGeometryChanged != null) {
+        widget.onGeometryChanged!(updated);
+      } else {
+        widget.onCircuitChanged(updated);
+      }
+      return;
+    }
+
+    if (_draggingBranchId != null) {
+      final snappedMid = Offset(
+        _snap(pos.dx.clamp(40, 1200)),
+        _snap(pos.dy.clamp(40, 900)),
       );
-    }).toList();
-    final updated = widget.circuit.copyWith(nodes: updatedNodes);
-    if (widget.onGeometryChanged != null) {
-      widget.onGeometryChanged!(updated);
-    } else {
-      widget.onCircuitChanged(updated);
+      final updatedBranches = widget.circuit.branches.map((b) {
+        if (b.id != _draggingBranchId) return b;
+        final from =
+            widget.circuit.nodes.firstWhere((n) => n.id == b.fromNodeId);
+        final to = widget.circuit.nodes.firstWhere((n) => n.id == b.toNodeId);
+        final p0 = Offset(from.x, from.y);
+        final p2 = Offset(to.x, to.y);
+        final ctrl = snappedMid * 2.0 - (p0 + p2) * 0.5;
+        return b.copyWith(controlX: ctrl.dx, controlY: ctrl.dy);
+      }).toList();
+      final updated = widget.circuit.copyWith(branches: updatedBranches);
+      if (widget.onGeometryChanged != null) {
+        widget.onGeometryChanged!(updated);
+      } else {
+        widget.onCircuitChanged(updated);
+      }
     }
   }
 
-  void _handlePanEnd(DragEndDetails details) {
-    _draggingNodeId = null;
+  void _handlePointerUpOrCancel(PointerEvent event) {
+    if (_isDraggingItem) {
+      setState(() {
+        _draggingNodeId = null;
+        _draggingBranchId = null;
+        _isDraggingItem = false;
+      });
+    }
   }
 
   @override
@@ -226,26 +276,30 @@ class _CircuitCanvasState extends State<CircuitCanvas> {
       color: ext.canvasBg,
       child: InteractiveViewer(
         transformationController: widget.transformationController,
+        panEnabled: !_isDraggingItem,
         minScale: 0.5,
         maxScale: 2.5,
         constrained: false,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTapDown: _handleTapDown,
-          onPanStart: _handlePanStart,
-          onPanUpdate: _handlePanUpdate,
-          onPanEnd: _handlePanEnd,
-          child: CustomPaint(
-            size: const Size(820, 560),
-            painter: _SchematicPainter(
-              circuit: widget.circuit,
-              solution: widget.solution,
-              pendingBranchFromId: _pendingBranchFromId,
-              selectedBranchId: widget.selectedBranchId,
-              colorScheme: Theme.of(context).colorScheme,
-              ext: ext,
-              controlPointBuilder: (b) =>
-                  _branchControlPoint(b, widget.circuit.branches),
+        child: Listener(
+          onPointerDown: _handlePointerDown,
+          onPointerMove: _handlePointerMove,
+          onPointerUp: _handlePointerUpOrCancel,
+          onPointerCancel: _handlePointerUpOrCancel,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: _handleTapDown,
+            child: CustomPaint(
+              size: const Size(820, 560),
+              painter: _SchematicPainter(
+                circuit: widget.circuit,
+                solution: widget.solution,
+                pendingBranchFromId: _pendingBranchFromId,
+                selectedBranchId: widget.selectedBranchId,
+                colorScheme: Theme.of(context).colorScheme,
+                ext: ext,
+                controlPointBuilder: (b) =>
+                    _branchControlPoint(b, widget.circuit.branches),
+              ),
             ),
           ),
         ),

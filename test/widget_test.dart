@@ -1,5 +1,8 @@
+import 'package:circuit_calc/core/model/circuit.dart';
 import 'package:circuit_calc/core/model/circuit_branch.dart';
+import 'package:circuit_calc/core/model/circuit_node.dart';
 import 'package:circuit_calc/main.dart';
+import 'package:circuit_calc/ui/widgets/circuit_canvas.dart';
 import 'package:circuit_calc/ui/widgets/element_editor_dialog.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -104,5 +107,49 @@ void main() {
 
     expect(find.text('Введите корректное число'), findsOneWidget);
     expect(saved, isNull);
+  });
+
+  testWidgets('Dragging a branch element updates its control point on canvas',
+      (WidgetTester tester) async {
+    var circuit = const Circuit(
+      name: 'Drag test',
+      nodes: [
+        CircuitNode(id: 'n0', label: '0', x: 100, y: 100),
+        CircuitNode(id: 'n1', label: '1', x: 300, y: 100),
+      ],
+      branches: [
+        CircuitBranch(
+          id: 'b1',
+          name: '1',
+          fromNodeId: 'n0',
+          toNodeId: 'n1',
+          rOhm: 10,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CircuitCanvas(
+            circuit: circuit,
+            solution: null,
+            activeTool: CanvasTool.selectMove,
+            onCircuitChanged: (c) => circuit = c,
+            onGeometryChanged: (c) => circuit = c,
+            onEditBranch: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Drag from branch midpoint (200, 100) down by 60px
+    await tester.dragFrom(const Offset(200, 100), const Offset(0, 60));
+    await tester.pumpAndSettle();
+
+    expect(circuit.branches.first.controlX, isNotNull);
+    expect(circuit.branches.first.controlY, isNotNull);
+    expect(circuit.branches.first.controlY!, greaterThan(150));
   });
 }

@@ -1007,7 +1007,7 @@ class _HomeScreenState extends State<HomeScreen>
   String _hintForTool(CanvasTool tool) {
     switch (tool) {
       case CanvasTool.selectMove:
-        return 'Клик по ветви — параметры. Клик по узлу — базовый (φ=0). Перетаскивание — сдвиг узла.';
+        return 'Клик по ветви — параметры. Клик по узлу — базовый (φ=0). Перетаскивание — сдвиг узлов и элементов.';
       case CanvasTool.addNode:
         return 'Нажмите на свободное место холста, чтобы добавить новый узел.';
       case CanvasTool.addBranch:
